@@ -1,5 +1,5 @@
 # CNKICrawlerMCP
-
+![CNKICrawlerMCP](https://socialify.git.ci/Mangofang/CNKICrawlerMCP/image?custom_language=Go&font=Jost&forks=1&issues=1&language=1&logo=https%3A%2F%2Favatars.githubusercontent.com%2Fu%2F182288589%3Fs%3D200%26v%3D4&name=1&owner=1&pattern=Plus&stargazers=1&theme=Auto)
 一个基于ModelContextProtocol(MCP)的中国知网（CNKI）学术论文爬虫服务，为AI助手（如ClaudeDesktop、Cursor、CluadeCode等）提供论文检索、信息获取和正文内容提取能力。
 
 ## ✨ 功能特性
