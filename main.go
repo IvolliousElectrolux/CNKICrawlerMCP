@@ -46,6 +46,25 @@ func main() {
 			Required: []string{"href"},
 		},
 	}, handleGetPaperMainBody)
+	s.AddTool(mcp.Tool{
+		Name:        "SetGlobalCookie",
+		Description: "设置CNKIrawlerMCP的全局Cookie，如果用户没有明确要求设置cookie不要使用该工具，系统默认会自动通过IP登录获取Cookie并设置到全局变量中",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"cookie": map[string]string{"type": "string", "description": "Cookie值"},
+			},
+			Required: []string{"cookie"},
+		},
+	}, handleSetGlobalCookie)
+	s.AddTool(mcp.Tool{
+		Name:        "GetGlobalCookie",
+		Description: "获取CNKIrawlerMCP的全局Cookie",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+		},
+	}, handleGetGlobalCookie)
+
 	server.ServeStdio(s)
 
 	/*
@@ -72,6 +91,36 @@ func main() {
 				paper.Title, paper.Authors, paper.Source, paper.SourceLink, paper.Href, paper.SouceCompositeFactor, paper.SourceComprehensiveFactor)
 		}
 	*/
+}
+
+func handleGetGlobalCookie(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			mcp.NewTextContent(fmt.Sprintf("[Success] 获取全局Cookie成功: %v", GetGlobalCookie())),
+		},
+	}, nil
+}
+
+type setGlobalCookieArgs struct {
+	Cookie string `json:"cookie"`
+}
+
+func handleSetGlobalCookie(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args, err := ParseArgs[setGlobalCookieArgs](request.Params.Arguments)
+	if err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				mcp.NewTextContent(fmt.Sprintf("[ERROR] 参数错误: %v", err)),
+			},
+			IsError: true,
+		}, nil
+	}
+	SetGlobalCookie(args.Cookie)
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			mcp.NewTextContent(fmt.Sprintf("[Success] 设置全局Cookie成功: %v", GetGlobalCookie())),
+		},
+	}, nil
 }
 
 type scanPaperArgs struct {
