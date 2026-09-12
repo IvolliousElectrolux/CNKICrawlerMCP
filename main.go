@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
+	"CNKICrawlerMCP/types"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -14,12 +15,14 @@ func main() {
 	s := server.NewMCPServer("CNKICrawlerMcp", "1.0.0")
 	s.AddTool(mcp.Tool{
 		Name:        "ScanPaper",
-		Description: "通过关键词进行论文检索",
+		Description: "通过关键词进行论文检索（主题字段）。返回标题、作者、来源期刊及影响因子",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
-				"value":    map[string]string{"type": "string", "description": "关键词"},
-				"pageSize": map[string]string{"type": "integer", "description": "结果数量，最好小于80，最大不超过100"},
+				"value":    map[string]string{"type": "string", "description": "检索关键词（主题字段）"},
+				"pageSize": map[string]string{"type": "integer", "description": "期望返回的论文数量，1-50，默认20。知网接口仅支持 10/20/50 三档，传入其他值会被自动向上取整到合法档位"},
+				"pageNum":  map[string]string{"type": "integer", "description": "起始页码，从1开始，默认1"},
+				"withFactors": map[string]string{"type": "boolean", "description": "是否补全期刊影响因子，默认true。补全需按期刊逐个抓取，50条结果约需1分钟；只要题录信息时设为false可秒回"},
 			},
 			Required: []string{"value"},
 		},
@@ -126,6 +129,47 @@ func handleSetGlobalCookie(ctx context.Context, request mcp.CallToolRequest) (*m
 type scanPaperArgs struct {
 	Value    string `json:"value"`
 	PageSize int    `json:"pageSize"`
+	PageNum  int    `json:"pageNum"`
+	// 用指针以区分"未传"和"显式传 false"，未传时默认补全影响因子
+	WithFactors *bool `json:"withFactors"`
+}
+
+// searchWithRelogin 检索；若发现 Cookie 失效则自动重新 IP 登录后重试一次
+func searchWithRelogin(value string, pageNum, pageSize int) ([]types.Paper, error) {
+	papers, err := Search(value, pageNum, pageSize, GetGlobalCookie())
+	if errors.Is(err, ErrCookieExpired) {
+		if ok, loginErr := RefreshLogin(); ok && loginErr == nil {
+			return Search(value, pageNum, pageSize, GetGlobalCookie())
+		}
+	}
+	return papers, err
+}
+
+// enrichSourceFactors 补充期刊影响因子。
+// 同一次检索中同一期刊会被大量重复引用，按 SourceLink 去重后请求数可从几十次降到个位数；
+// GetSourceFactors 内部另有 24 小时进程级缓存。
+func enrichSourceFactors(papers []types.Paper) {
+	type factors struct{ composite, comprehensive float64 }
+	done := make(map[string]factors, len(papers))
+
+	for i := range papers {
+		link := papers[i].SourceLink
+		if link == "" {
+			continue
+		}
+		if v, ok := done[link]; ok {
+			papers[i].SouceCompositeFactor = v.composite
+			papers[i].SourceComprehensiveFactor = v.comprehensive
+			continue
+		}
+		composite, comprehensive, err := GetSourceFactors(link, GetGlobalCookie())
+		if err != nil {
+			continue
+		}
+		done[link] = factors{composite, comprehensive}
+		papers[i].SouceCompositeFactor = composite
+		papers[i].SourceComprehensiveFactor = comprehensive
+	}
 }
 
 func handleScanPaper(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -147,28 +191,26 @@ func handleScanPaper(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 			IsError: true,
 		}, nil
 	}
-	papers, err := Search(args.Value, 1, args.PageSize, GetGlobalCookie())
+	if args.PageSize <= 0 {
+		args.PageSize = 20
+	}
+	if args.PageSize > maxTotalResults {
+		args.PageSize = maxTotalResults
+	}
+
+	papers, err := searchWithRelogin(args.Value, args.PageNum, args.PageSize)
 	if err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
-				mcp.NewTextContent(fmt.Sprintf("[ERROR] 搜索失败: %v", err)),
+				mcp.NewTextContent(fmt.Sprintf("[ERROR] 检索失败: %v", err)),
 			},
 			IsError: true,
 		}, nil
 	}
 
-	// 循环获取影响因子并更新论文信息
-	for i := range papers {
-		if papers[i].SourceLink != "" {
-			composite, comprehensive, err := GetSourceFactors(papers[i].SourceLink, GetGlobalCookie())
-			if err != nil {
-				continue
-			} else {
-				papers[i].SouceCompositeFactor = composite
-				papers[i].SourceComprehensiveFactor = comprehensive
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+	withFactors := args.WithFactors == nil || *args.WithFactors
+	if withFactors {
+		enrichSourceFactors(papers)
 	}
 
 	jsonData, err := json.Marshal(papers)

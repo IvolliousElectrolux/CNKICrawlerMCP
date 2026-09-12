@@ -1,0 +1,15 @@
+# 构建产物
+*.exe
+*.exe.bak
+CNKICrawlerMCP
+CNKICrawlerMCP_new
+
+# 测试与调试产物
+*.test
+*.out
+zz_probe_*
+
+# IDE
+.idea/
+.vscode/
+*.swp

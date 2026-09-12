@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gocolly/colly/v2"
@@ -166,14 +165,23 @@ func getRedirect(href string, cookie string) string {
 	return redirectUrl
 }
 func CheckLogin() (bool, error) {
-	if GetGlobalCookie() == "" {
-		cookie, err := IpLogin()
-		if err != nil && cookie == "" {
-			return false, err
-		} else {
-			SetGlobalCookie(cookie)
-		}
+	if GetGlobalCookie() != "" {
+		return true, nil
 	}
+	return RefreshLogin()
+}
+
+// RefreshLogin 强制重新做一次 IP 登录并覆盖全局 Cookie。
+// 原实现只在 Cookie 为空时登录，Cookie 过期后不会刷新，导致后续检索静默返回空结果。
+func RefreshLogin() (bool, error) {
+	cookie, err := IpLogin()
+	if err != nil {
+		return false, err
+	}
+	if cookie == "" {
+		return false, fmt.Errorf("IP 登录未获取到 Cookie，请确认处于校园网环境，或手动调用 SetGlobalCookie 设置")
+	}
+	SetGlobalCookie(cookie)
 	return true, nil
 }
 func ParseArgs[T any](args any) (*T, error) {
@@ -200,51 +208,51 @@ func IpLogin() (string, error) {
 	var Cookie string                     // 最终组合Cookie字符串
 	var Cookies = make(map[string]string) // 存储单个cookie的name和value
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-
 	c.OnRequest(func(r *colly.Request) {
 		r.Headers.Set("Content-Type", "application/json")
 	})
 
+	// colly 默认是同步的，PostRaw 返回时回调已执行完毕，无需 WaitGroup。
+	// 原实现在 OnResponse / OnError 里各调一次 wg.Done()，请求出错时还会再调一次，
+	// 会 panic: sync: negative WaitGroup counter 并打挂整个 MCP 进程。
 	c.OnResponse(func(r *colly.Response) {
-		defer wg.Done()
 		var resp types.LoginResponse
 		body := strings.Trim(string(r.Body), "()")
 		if err := json.Unmarshal([]byte(body), &resp); err != nil {
-			Cookie = ""
+			return
 		}
-		if resp.IsSuccess {
-			for _, cookieStr := range r.Headers.Values("Set-Cookie") {
-				name, value := parseCookie(cookieStr)
-				if name != "" {
-					Cookies[name] = value
-				}
+		if !resp.IsSuccess {
+			return
+		}
+		for _, cookieStr := range r.Headers.Values("Set-Cookie") {
+			name, value := parseCookie(cookieStr)
+			if name != "" {
+				Cookies[name] = value
 			}
-		} else {
-			Cookie = ""
 		}
 		Cookie = buildCookieHeader(Cookies)
 	})
 
 	c.OnError(func(r *colly.Response, err error) {
-		defer wg.Done()
 		Cookie = ""
 	})
 
 	if err := c.PostRaw("https://login.cnki.net/TopLoginCore/api/loginapi/IpLoginFlushPo", []byte("{}")); err != nil {
-		wg.Done()
 		return "", err
 	}
-	wg.Wait()
 	return Cookie, nil
 }
 
 // buildCookieHeader 将 cookies map 转换为 "name=value; name2=value2" 格式的字符串
 func buildCookieHeader(cookies map[string]string) string {
-	var parts []string
-	for name, value := range cookies {
-		parts = append(parts, name+"="+value)
+	names := make([]string, 0, len(cookies))
+	for name := range cookies {
+		names = append(names, name)
+	}
+	sort.Strings(names) // map 遍历顺序随机，排序保证 Cookie 头稳定
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+"="+cookies[name])
 	}
 	return strings.Join(parts, "; ")
 }
