@@ -15,7 +15,7 @@ func main() {
 	s := server.NewMCPServer("CNKICrawlerMcp", "1.0.0")
 	s.AddTool(mcp.Tool{
 		Name:        "ScanPaper",
-		Description: "通过关键词进行论文检索（主题字段）。返回标题、作者、来源期刊及影响因子",
+		Description: "通过关键词进行论文检索（主题字段）。返回标题、作者、来源期刊、发表年份及影响因子。默认按发表时间倒序，Year/Date 取自知网“发表时间”列；OnlineFirst 为 true 时该文献尚无正式刊期，Year 是网络首发日期而非刊期年份",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -29,7 +29,7 @@ func main() {
 	}, handleScanPaper)
 	s.AddTool(mcp.Tool{
 		Name:        "GetPaperInfo",
-		Description: "通过ScanPaper工具获取的论文链接，获取论文的摘要、下载链接、在线阅读链接等信息",
+		Description: "通过ScanPaper工具获取的论文链接，获取论文的摘要、发表年份、下载链接、在线阅读链接等信息",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{

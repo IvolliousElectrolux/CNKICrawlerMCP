@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -157,40 +158,78 @@ func fetchSearchPage(value string, pageNum, pageSize int, cookie string) (*searc
 
 	baseURL, _ := url.Parse(searchEndpoint)
 	doc.Find("table.result-table-list tbody tr").Each(func(_ int, row *goquery.Selection) {
-		titleElem := row.Find("td.name a.fz14").First()
-		if titleElem.Length() == 0 {
-			return
+		if paper, ok := parsePaperRow(row, baseURL); ok {
+			page.Papers = append(page.Papers, paper)
 		}
-		href, _ := titleElem.Attr("href")
-		href = strings.TrimSpace(href)
-		if href == "" || strings.HasPrefix(href, "javascript:") {
-			return
-		}
-		if !strings.Contains(href, "/kcms2/article/abstract") {
-			return
-		}
-		if !strings.HasPrefix(href, "http") {
-			href = "https://kns.cnki.net" + href
-		}
-
-		var authors []string
-		row.Find("td.author a.KnowledgeNetLink").Each(func(_ int, a *goquery.Selection) {
-			if name := strings.TrimSpace(a.Text()); name != "" {
-				authors = append(authors, name)
-			}
-		})
-
-		sourceInfo := extractSourceInfo(row.Find("td.source"), baseURL)
-		page.Papers = append(page.Papers, types.Paper{
-			Title:      strings.TrimSpace(titleElem.Text()),
-			Authors:    authors,
-			Source:     sourceInfo.Name,
-			SourceLink: sourceInfo.Link,
-			Href:       href,
-		})
 	})
 
 	return page, nil
+}
+
+// onlineFirstMark 结果表里标记"尚无正式刊期"的角标文字
+const onlineFirstMark = "网络首发"
+
+// 知网结果表 `td.date`（表头"发表时间"）的取值形态不止一种：
+//   - 期刊/学位/会议/报纸： "2023-05-15"
+//   - 网络首发：           "2026-10-16 10:52"（带时分）
+//   - 少量旧数据/带版次：   "2023年05期"、"2023-05-15(A1)"
+//
+// 统一取其中出现的第一个 19xx/20xx 四位年份；取不到时返回 0 而不是瞎猜。
+var yearRe = regexp.MustCompile(`(?:19|20)\d{2}`)
+
+// extractPublishDate 解析 `td.date` 单元格，返回发表时间原文与年份。
+func extractPublishDate(dateElem *goquery.Selection) (date string, year int) {
+	date = strings.Join(strings.Fields(strings.TrimSpace(dateElem.Text())), " ")
+	if date == "" || date == "—" {
+		return "", 0
+	}
+	if s := yearRe.FindString(date); s != "" {
+		year, _ = strconv.Atoi(s)
+	}
+	return date, year
+}
+
+// parsePaperRow 把结果表的一行转换成 Paper；
+// ok=false 表示这一行不是可用的论文记录（缺标题，或标题链接不是摘要页）。
+func parsePaperRow(row *goquery.Selection, baseURL *url.URL) (types.Paper, bool) {
+	titleElem := row.Find("td.name a.fz14").First()
+	if titleElem.Length() == 0 {
+		return types.Paper{}, false
+	}
+	href, _ := titleElem.Attr("href")
+	href = strings.TrimSpace(href)
+	if href == "" || strings.HasPrefix(href, "javascript:") {
+		return types.Paper{}, false
+	}
+	if !strings.Contains(href, "/kcms2/article/abstract") {
+		return types.Paper{}, false
+	}
+	if !strings.HasPrefix(href, "http") {
+		href = "https://kns.cnki.net" + href
+	}
+
+	var authors []string
+	row.Find("td.author a.KnowledgeNetLink").Each(func(_ int, a *goquery.Selection) {
+		if name := strings.TrimSpace(a.Text()); name != "" {
+			authors = append(authors, name)
+		}
+	})
+
+	sourceInfo := extractSourceInfo(row.Find("td.source"), baseURL)
+	publishDate, year := extractPublishDate(row.Find("td.date"))
+
+	return types.Paper{
+		Title:      strings.TrimSpace(titleElem.Text()),
+		Authors:    authors,
+		Source:     sourceInfo.Name,
+		SourceLink: sourceInfo.Link,
+		Year:       year,
+		Date:       publishDate,
+		// 网络首发的论文尚无正式刊期，td.date 给的是网络首发日期，
+		// 年份与最终刊期年份可能不同，单独标出以免被当成刊期年份使用。
+		OnlineFirst: strings.Contains(row.Find("b.marktip").Text(), onlineFirstMark),
+		Href:        href,
+	}, true
 }
 
 // parseTotalPage 从 "1/300" 或 data-pagenum="300" 解析总页数
@@ -285,11 +324,36 @@ func GetPaperInfo(href string, cookie string) (types.PaperInfo, error) {
 			paperInfo.Abstract = html.UnescapeString(abstract)
 		}
 	})
+	// 已正式出版的论文：题录行形如 "中国商论 . 2026 ,35 (19) : 86-89"，
+	// 年份紧跟刊名、排在卷期页码之前，取第一个四位年份即可。
+	var topTip, headTime string
+	c.OnHTML("div.top-tip", func(e *colly.HTMLElement) { topTip = e.Text })
+	// 网络首发的论文还没有刊期，题录行里只有刊名，年份只在
+	// "（录用定稿）网络首发时间：2026-10-16 10:52:48" 这一行里。
+	c.OnHTML("div.head-time", func(e *colly.HTMLElement) { headTime = e.Text })
 
 	if err := c.Visit(href); err != nil {
 		return paperInfo, err
 	}
+
+	paperInfo.Year, paperInfo.OnlineFirst = pickYearFromDetail(topTip, headTime)
+
 	return paperInfo, nil
+}
+
+// pickYearFromDetail 从详情页取发表年份。
+// 已正式出版的论文，年份在题录行里（topTip，如 "中国商论 . 2026 ,35 (19)"）；
+// 网络首发的论文还没有卷期号，题录行里只有刊名，年份只在网络首发时间（headTime）里。
+// 所以判断依据是"哪儿真的能取到年份"，而不是"元素存不存在"。
+func pickYearFromDetail(topTip, headTime string) (year int, onlineFirst bool) {
+	src := topTip
+	if yearRe.FindStringIndex(src) == nil {
+		src = headTime
+	}
+	if s := yearRe.FindString(src); s != "" {
+		year, _ = strconv.Atoi(s)
+	}
+	return year, strings.Contains(headTime, onlineFirstMark)
 }
 
 func GetPaperMainBody(href string, cookie string) (string, error) {

@@ -5,6 +5,9 @@ type Paper struct {
 	Authors                   []string // 作者列表
 	Source                    string   // 来源（期刊/会议名称）
 	SourceLink                string   // 来源链接
+	Year                      int      // 发表年份，如 2023；0 表示知网未给出可解析的年份
+	Date                      string   // 发表时间原文，如 "2023-05-15"、"2026-10-16 10:52"
+	OnlineFirst               bool     // 网络首发：尚无正式刊期，Year 为网络首发年而非刊期年份
 	SouceCompositeFactor      float64  // 复合影响因子
 	SourceComprehensiveFactor float64  // 综合影响因子
 	Href                      string   // 跳转链接
@@ -75,6 +78,9 @@ type PaperInfo struct {
 	PDF      string // PDF 下载链接
 	HTML     string // HTML 在线阅读链接
 	Abstract string // 摘要
+	Year     int    // 发表年份，取自详情页题录行；0 表示未解析到
+	// 网络首发：该论文尚无正式刊期，详情页没有题录行，Year 取自"网络首发时间"
+	OnlineFirst bool
 }
 type PaperMainBodyParams struct {
 	Invoice   string `json:"invoice"`
