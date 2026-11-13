@@ -264,10 +264,110 @@ func unitBox(m mat3) (minX, minY, maxX, maxY float64) {
 }
 
 type textState struct {
-	tc, th, tl, tfs, trise float64
-	tm, tlm, ctm           mat3
-	font                   *pdf.Font
-	enc                    pdf.TextEncoding
+	tc, tw, th, tl, tfs, trise float64
+	tm, tlm, ctm               mat3
+	font                       *pdf.Font
+	enc                        pdf.TextEncoding
+	metric                     fontMetric
+}
+
+// fontMetric 是知网字体里真正能用的字宽.
+// 很多 CID 字体没有 Widths, 只给 /DW 1000, 不按这个推进的话同一串字会叠在一个点上, 排序后相邻汉字就会颠倒.
+type fontMetric struct {
+	codeBytes int
+	dw        float64
+	exact     map[int]float64
+	spans     []widthSpan
+	simple    bool
+	encoding  string
+}
+
+type widthSpan struct {
+	lo, hi int
+	w      float64
+}
+
+func (m fontMetric) width(code int) float64 {
+	if w, ok := m.exact[code]; ok && w > 0 {
+		return w
+	}
+	for _, s := range m.spans {
+		if code >= s.lo && code <= s.hi && s.w > 0 {
+			return s.w
+		}
+	}
+	if m.dw > 0 {
+		return m.dw
+	}
+	return 0
+}
+
+func metricFor(f *pdf.Font) (m fontMetric) {
+	defer func() { recover() }()
+	if f == nil {
+		return fontMetric{codeBytes: 1, simple: true}
+	}
+	m.encoding = f.V.Key("Encoding").Name()
+	desc := f.V.Key("DescendantFonts")
+	if desc.Kind() != pdf.Array || desc.Len() == 0 {
+		return fontMetric{codeBytes: 1, simple: true, encoding: m.encoding}
+	}
+	m.codeBytes = 2
+	m.dw = 1000
+	cid := desc.Index(0)
+	if dw := cid.Key("DW").Float64(); dw > 0 {
+		m.dw = dw
+	}
+	w := cid.Key("W")
+	if w.Kind() != pdf.Array {
+		return m
+	}
+	for i := 0; i < w.Len(); {
+		start := int(w.Index(i).Int64())
+		i++
+		if i >= w.Len() {
+			break
+		}
+		nxt := w.Index(i)
+		if nxt.Kind() == pdf.Array {
+			if m.exact == nil {
+				m.exact = map[int]float64{}
+			}
+			for j := 0; j < nxt.Len(); j++ {
+				m.exact[start+j] = nxt.Index(j).Float64()
+			}
+			i++
+			continue
+		}
+		end := int(nxt.Int64())
+		i++
+		if i >= w.Len() {
+			break
+		}
+		width := w.Index(i).Float64()
+		i++
+		if end < start || end-start > 65535 {
+			continue
+		}
+		m.spans = append(m.spans, widthSpan{start, end, width})
+	}
+	return m
+}
+
+// stepAt 返回 raw[i] 这个字占用的字节数. Identity-H 固定 2 字节, GBK-EUC-H 的 ASCII 是 1 字节.
+func (m fontMetric) stepAt(raw string, i int) int {
+	if m.codeBytes < 2 || i >= len(raw) {
+		return 1
+	}
+	if strings.Contains(m.encoding, "GBK") || strings.Contains(m.encoding, "EUC") {
+		if raw[i] < 0x80 || i+1 >= len(raw) {
+			return 1
+		}
+	}
+	if i+1 >= len(raw) {
+		return 1
+	}
+	return 2
 }
 
 func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph, images *[]placedImg) {
@@ -278,18 +378,36 @@ func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph,
 	g := textState{th: 1, ctm: ctm}
 	var stack []textState
 	fonts := map[string]*pdf.Font{}
+	metrics := map[*pdf.Font]fontMetric{}
 	show := func(raw string) {
 		if g.enc == nil || g.font == nil || raw == "" {
 			return
 		}
-		decoded := g.enc.Decode(raw)
-		n := 0
-		for _, ch := range decoded {
-			var w0 float64
-			if n < len(raw) {
-				w0 = g.font.Width(int(raw[n]))
+		for i := 0; i < len(raw); {
+			n := g.metric.stepAt(raw, i)
+			chunk := raw[i : i+n]
+			i += n
+			text := g.enc.Decode(chunk)
+			if text == "" {
+				continue
 			}
-			n++
+			code := int(chunk[0])
+			if n == 2 {
+				code = int(chunk[0])<<8 | int(chunk[1])
+			}
+			w0 := g.metric.width(code)
+			if g.metric.simple {
+				if sw := g.font.Width(code); sw > 0 {
+					w0 = sw
+				}
+			}
+			if w0 <= 0 {
+				// 知网有的 TrueType 只写了空格的宽度, 其余字形按半字宽往右排, 避免叠在一起后被排序颠倒.
+				w0 = 500
+				if !g.metric.simple && g.metric.dw > 0 {
+					w0 = g.metric.dw
+				}
+			}
 			trm := matFrom(g.tfs*g.th, 0, 0, g.tfs, 0, g.trise).mul(g.tm).mul(g.ctm)
 			x, y := trm[2][0], trm[2][1]
 			size := math.Hypot(trm[1][0], trm[1][1])
@@ -300,10 +418,15 @@ func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph,
 			if adv == 0 {
 				adv = size * 0.5
 			}
-			if ch >= 32 {
-				*glyphs = append(*glyphs, glyph{x: x, y: y, size: size, w: adv, s: string(ch)})
+			for _, ch := range text {
+				if ch >= 32 {
+					*glyphs = append(*glyphs, glyph{x: x, y: y, size: size, w: adv, s: string(ch)})
+				}
 			}
 			tx := w0/1000*g.tfs + g.tc
+			if strings.ContainsRune(text, ' ') {
+				tx += g.tw
+			}
 			tx *= g.th
 			g.tm = matFrom(1, 0, 0, 1, tx, 0).mul(g.tm)
 		}
@@ -387,6 +510,12 @@ func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph,
 			}
 			g.font = f
 			g.enc = safeEncoder(f)
+			if met, ok := metrics[f]; ok {
+				g.metric = met
+			} else {
+				g.metric = metricFor(f)
+				metrics[f] = g.metric
+			}
 			g.tfs = args[1].Float64()
 		case "Tj":
 			if len(args) == 1 {
@@ -418,11 +547,16 @@ func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph,
 			if len(args) != 3 {
 				return
 			}
+			g.tw = args[0].Float64()
 			g.tc = args[1].Float64()
 			x := matFrom(1, 0, 0, 1, 0, -g.tl)
 			g.tlm = x.mul(g.tlm)
 			g.tm = g.tlm
 			show(args[2].RawString())
+		case "Tw":
+			if len(args) == 1 {
+				g.tw = args[0].Float64()
+			}
 		case "TL":
 			if len(args) == 1 {
 				g.tl = args[0].Float64()
@@ -467,6 +601,25 @@ func groupGlyphs(gs []glyph) []glyph {
 	if len(gs) == 0 {
 		return nil
 	}
+	// 同一页有时会叠两层相同的字. 位置几乎重合的同一个字只留一个.
+	kept := gs[:0:0]
+	for _, g := range gs {
+		dup := false
+		for i := range kept {
+			k := kept[i]
+			if k.s != g.s || math.Abs(k.y-g.y) > math.Max(k.size, g.size)*0.35 {
+				continue
+			}
+			if math.Abs(k.x-g.x) < math.Max(k.size, g.size)*0.15 {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			kept = append(kept, g)
+		}
+	}
+	gs = kept
 	sort.SliceStable(gs, func(i, j int) bool { return gs[i].y > gs[j].y })
 	var lines [][]glyph
 	for _, g := range gs {
