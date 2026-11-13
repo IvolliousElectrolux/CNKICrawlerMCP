@@ -18,6 +18,7 @@ const serverInstructions = `校园网 IP 自动登录的知网工具, 不需要�
 1. ScanPaper 检索题录.
 2. GetPaperInfo 查看摘要和关键词.
 3. DownloadPaper 把 PDF 存到本机, 并在同一文件夹写出 zotero.bib 和 paper.html. paper.html 直接提取文字和图片, 不做 OCR. 在 Zotero 里选择 文件 - 导入 打开 zotero.bib.
+遇到依次点击文字的验证时, 服务会自己识别位置并提交, 不需要用户手动点.
 不要自己请求 bar.cnki.net, docdown.cnki.net 或返回结果里的 PDF 链接, 那些地址离开本服务的会话会失败.`
 
 func main() {

@@ -13,3 +13,7 @@ zz_probe_*
 .idea/
 .vscode/
 *.swp
+
+# Rust
+captcha/target/
+captcha/model/*.onnx

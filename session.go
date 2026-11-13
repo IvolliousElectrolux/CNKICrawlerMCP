@@ -356,7 +356,11 @@ func cnkiDoLimited(req *http.Request, follow bool, limit int64) (*cnkiResponse, 
 	if resp.Request != nil && resp.Request.URL != nil {
 		final = resp.Request.URL.String()
 	}
-	return &cnkiResponse{Status: resp.StatusCode, URL: final, Header: resp.Header.Clone(), Body: body}, nil
+	out := &cnkiResponse{Status: resp.StatusCode, URL: final, Header: resp.Header.Clone(), Body: body}
+	if !follow {
+		return out, nil
+	}
+	return absorbVerify(req, out, limit)
 }
 
 func cnkiGet(rawURL, referer string) (*cnkiResponse, error) {
