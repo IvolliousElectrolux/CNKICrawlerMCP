@@ -122,6 +122,16 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			walkStream(contents, page.Resources(), matIdent(), 0, &glyphs, &images, book)
 		}
 		boxes := make([]htmlBox, 0, len(glyphs)+len(images))
+		// 整页大图就是这一页本身. 上面再画一层文字会盖住正文, 这一层往往还是错的.
+		pagePicture := false
+		for _, im := range images {
+			minX, minY, maxX, maxY := unitBox(im.ctm)
+			if maxX-minX >= pw*0.85 && maxY-minY >= ph*0.85 {
+				pagePicture = true
+				break
+			}
+		}
+		if !pagePicture {
 		for _, run := range groupGlyphs(glyphs) {
 			text := strings.TrimSpace(run.s)
 			if text == "" {
@@ -158,6 +168,7 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 				left, top, width, height, width, height, faceStyle, fs*0.8, fs, width, html.EscapeString(run.s),
 			)})
 		}
+		}
 		for k, im := range images {
 			minX, minY, maxX, maxY := unitBox(im.ctm)
 			left := (minX - ox) * htmlScale
@@ -181,8 +192,8 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			out.Images++
 			alt := fmt.Sprintf("第 %d 页图片", i)
 			boxes = append(boxes, htmlBox{maxY, fmt.Sprintf(
-				`<img alt="%s" src="assets/%s" style="left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx">`,
-				html.EscapeString(alt), name, left, top, width, height,
+				`<img alt="%s" src="assets/%s" style="left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx;%s">`,
+				html.EscapeString(alt), name, left, top, width, height, imageTurn(im.ctm),
 			)})
 		}
 		sort.SliceStable(boxes, func(a, b int) bool { return boxes[a].line > boxes[b].line })
@@ -290,6 +301,22 @@ func unitBox(m mat3) (minX, minY, maxX, maxY float64) {
 		}
 	}
 	return minX, minY, maxX, maxY
+}
+
+// imageTurn 按图片矩阵把倒贴的图翻正. 横轴 a, 纵轴 d 为负时, PDF 里看到的是翻过来的.
+func imageTurn(m mat3) string {
+	flipX := m[0][0] < 0
+	flipY := m[1][1] < 0
+	switch {
+	case flipX && flipY:
+		return "transform:scale(-1,-1)"
+	case flipY:
+		return "transform:scaleY(-1)"
+	case flipX:
+		return "transform:scaleX(-1)"
+	default:
+		return ""
+	}
 }
 
 type textState struct {
