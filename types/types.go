@@ -74,12 +74,16 @@ type LoginResponse struct {
 	TurntoTarget string         `json:"TurntoTarget"`
 }
 type PaperInfo struct {
-	CAJ      string // CAJ 下载链接
-	PDF      string // PDF 下载链接
-	HTML     string // HTML 在线阅读链接
-	Abstract string // 摘要
-	Year     int    // 发表年份，取自详情页题录行；0 表示未解析到
-	// 网络首发：该论文尚无正式刊期，详情页没有题录行，Year 取自"网络首发时间"
+	Title    string   // 论文标题
+	Authors  []string // 作者
+	Keywords []string // 关键词
+	HasPDF   bool     // 摘要页上有 PDF 下载按钮
+	CAJ      string   `json:"-"` // 仅供本服务下载, 不返回给调用方
+	PDF      string   `json:"-"` // 仅供 DownloadPaper, 离开会话无法下载
+	HTML     string   // HTML 在线阅读链接
+	Abstract string   // 摘要
+	Year     int      // 发表年份, 取自详情页题录行; 0 表示未解析到
+	// 网络首发: 该论文尚无正式刊期, Year 取自网络首发时间
 	OnlineFirst bool
 }
 type PaperMainBodyParams struct {

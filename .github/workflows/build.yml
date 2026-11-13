@@ -1,0 +1,31 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/CNKICrawlerMCP.exe .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/CNKICrawlerMCP .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CNKICrawlerMCP
+          path: dist/*
+          if-no-files-found: error

@@ -3,6 +3,7 @@ package main
 import (
 	"CNKICrawlerMCP/types"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/url"
@@ -11,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/gocolly/colly/v2"
 )
 
 const searchEndpoint = "https://kns.cnki.net/kns8s/brief/grid"
@@ -39,17 +39,6 @@ func normalizePageSize(want int) int {
 	return validPageSizes[len(validPageSizes)-1]
 }
 
-func newCollector(cookie string) *colly.Collector {
-	c := colly.NewCollector()
-	c.OnRequest(func(r *colly.Request) {
-		r.Headers.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-		r.Headers.Set("Cookie", cookie)
-		r.Headers.Set("User-Agent", userAgent)
-		r.Headers.Set("Referer", "https://kns.cnki.net/")
-	})
-	return c
-}
-
 func containsAny(s string, subs ...string) bool {
 	for _, sub := range subs {
 		if strings.Contains(s, sub) {
@@ -75,7 +64,7 @@ type searchPage struct {
 }
 
 // fetchSearchPage 抓取并解析单页检索结果
-func fetchSearchPage(value string, pageNum, pageSize int, cookie string) (*searchPage, error) {
+func fetchSearchPage(value string, pageNum, pageSize int) (*searchPage, error) {
 	item := types.Item{Field: "SU", Value: value, Operator: "TOPRANK", Logic: 0, Title: "主题"}
 	qGroup := types.QGroup{Key: "Subject", Title: "", Logic: 0, Items: []types.Item{item}, ChildItems: []types.Item{}}
 	qNode := types.QNode{QGroup: []types.QGroup{qGroup}}
@@ -107,22 +96,15 @@ func fetchSearchPage(value string, pageNum, pageSize int, cookie string) (*searc
 		"turnpage":   "vLP2bNpghntZLRq9Q5Y7Qg!!",
 	}
 
-	var body string
-	cnkiThrottle.waitTurn()
-
-	c := newCollector(cookie)
-	c.OnResponse(func(r *colly.Response) {
-		body = string(r.Body)
-	})
-	c.OnError(func(r *colly.Response, err error) {
-		if r != nil {
-			body = string(r.Body)
-		}
-	})
-
-	if err := c.Post(searchEndpoint, postData); err != nil && strings.TrimSpace(body) == "" {
+	form := url.Values{}
+	for k, v := range postData {
+		form.Set(k, v)
+	}
+	resp, err := cnkiPostForm(searchEndpoint, form, "https://kns.cnki.net/kns8s/defaultresult/index")
+	if err != nil {
 		return nil, fmt.Errorf("检索请求失败: %w", err)
 	}
+	body := string(resp.Body)
 
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
 	if err != nil {
@@ -247,7 +229,7 @@ func parseTotalPage(text, dataPageNum string) int {
 
 // Search 按关键词检索。pageSize 表示期望累计返回的论文数（内部会自动向知网合法档位取整并按需翻页）。
 // 返回值永远是非 nil 切片；真正无结果时返回空切片，被风控或 Cookie 失效时返回对应错误。
-func Search(value string, pageNum int, pageSize int, cookie string) ([]types.Paper, error) {
+func Search(value string, pageNum int, pageSize int) ([]types.Paper, error) {
 	if strings.TrimSpace(value) == "" {
 		return nil, fmt.Errorf("检索关键词不能为空")
 	}
@@ -267,7 +249,7 @@ func Search(value string, pageNum int, pageSize int, cookie string) ([]types.Pap
 	seen := make(map[string]bool, want)
 
 	for len(papers) < want {
-		page, err := fetchSearchPage(value, pageNum, perPage, cookie)
+		page, err := fetchSearchPage(value, pageNum, perPage)
 		if err != nil {
 			// 已经拿到部分结果时不要把整次检索判为失败
 			if len(papers) > 0 {
@@ -305,40 +287,129 @@ func Search(value string, pageNum int, pageSize int, cookie string) ([]types.Pap
 	return papers, nil
 }
 
-func GetPaperInfo(href string, cookie string) (types.PaperInfo, error) {
-	var paperInfo types.PaperInfo
-	cnkiThrottle.waitTurn()
-
-	c := newCollector(cookie)
-	c.OnHTML("#cajDown[href]", func(e *colly.HTMLElement) {
-		paperInfo.CAJ = e.Request.AbsoluteURL(e.Attr("href"))
-	})
-	c.OnHTML("#pdfDown[href]", func(e *colly.HTMLElement) {
-		paperInfo.PDF = e.Request.AbsoluteURL(e.Attr("href"))
-	})
-	c.OnHTML(".btn-html a[href]", func(e *colly.HTMLElement) {
-		paperInfo.HTML = e.Request.AbsoluteURL(e.Attr("href"))
-	})
-	c.OnHTML(`input#abstract_text[type="hidden"]`, func(e *colly.HTMLElement) {
-		if abstract := e.Attr("value"); abstract != "" {
-			paperInfo.Abstract = html.UnescapeString(abstract)
+func GetPaperInfo(href string) (types.PaperInfo, error) {
+	info, err := getPaperInfo(href)
+	if errors.Is(err, ErrCookieExpired) {
+		if ok, loginErr := RefreshLogin(); ok && loginErr == nil {
+			return getPaperInfo(href)
 		}
-	})
-	// 已正式出版的论文：题录行形如 "中国商论 . 2026 ,35 (19) : 86-89"，
-	// 年份紧跟刊名、排在卷期页码之前，取第一个四位年份即可。
-	var topTip, headTime string
-	c.OnHTML("div.top-tip", func(e *colly.HTMLElement) { topTip = e.Text })
-	// 网络首发的论文还没有刊期，题录行里只有刊名，年份只在
-	// "（录用定稿）网络首发时间：2026-10-16 10:52:48" 这一行里。
-	c.OnHTML("div.head-time", func(e *colly.HTMLElement) { headTime = e.Text })
+	}
+	return info, err
+}
 
-	if err := c.Visit(href); err != nil {
+func getPaperInfo(href string) (types.PaperInfo, error) {
+	var paperInfo types.PaperInfo
+	resp, err := cnkiGet(href, knsHome)
+	if err != nil {
 		return paperInfo, err
 	}
+	body := string(resp.Body)
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
+	if err != nil {
+		return paperInfo, fmt.Errorf("解析详情页失败: %w", err)
+	}
 
+	hasPaper := doc.Find("div.wx-tit h1, #abstract_text, #pdfDown, #cajDown").Length() > 0
+	if !hasPaper {
+		switch {
+		case looksLikeVerify(body):
+			return paperInfo, ErrBlocked
+		case looksLikeLogin(body):
+			return paperInfo, ErrCookieExpired
+		default:
+			return paperInfo, fmt.Errorf("详情页不是论文页 (HTTP %d, 长度 %d)", resp.Status, len(body))
+		}
+	}
+
+	if h1 := doc.Find("div.wx-tit h1").First(); h1.Length() > 0 {
+		clone := h1.Clone()
+		clone.Find("i, span, script").Remove()
+		paperInfo.Title = strings.Join(strings.Fields(clone.Text()), " ")
+	}
+	doc.Find("#authorpart a").Each(func(_ int, a *goquery.Selection) {
+		if name := strings.TrimSpace(a.Text()); name != "" {
+			paperInfo.Authors = append(paperInfo.Authors, name)
+		}
+	})
+	paperInfo.Keywords = parseKeywords(doc.Find("p.keywords").First())
+	if v, ok := doc.Find("#abstract_text").Attr("value"); ok && strings.TrimSpace(v) != "" {
+		paperInfo.Abstract = html.UnescapeString(strings.TrimSpace(v))
+	} else if summary := strings.TrimSpace(doc.Find("#ChDivSummary").Text()); summary != "" {
+		paperInfo.Abstract = strings.Join(strings.Fields(summary), " ")
+	}
+	paperInfo.PDF = absRef(href, attrHref(doc.Find("#pdfDown").First()))
+	paperInfo.HasPDF = paperInfo.PDF != ""
+	paperInfo.CAJ = absRef(href, attrHref(doc.Find("#cajDown").First()))
+	paperInfo.HTML = absRef(href, attrHref(doc.Find(".btn-html a").First()))
+
+	topTip := doc.Find("div.top-tip").First().Text()
+	headTime := doc.Find("div.head-time").First().Text()
 	paperInfo.Year, paperInfo.OnlineFirst = pickYearFromDetail(topTip, headTime)
-
+	if paperInfo.Authors == nil {
+		paperInfo.Authors = []string{}
+	}
+	if paperInfo.Keywords == nil {
+		paperInfo.Keywords = []string{}
+	}
 	return paperInfo, nil
+}
+
+func attrHref(sel *goquery.Selection) string {
+	if sel == nil || sel.Length() == 0 {
+		return ""
+	}
+	href, _ := sel.Attr("href")
+	href = strings.TrimSpace(href)
+	if href == "" || strings.HasPrefix(href, "javascript:") {
+		return ""
+	}
+	return href
+}
+
+func absRef(base, href string) string {
+	if href == "" {
+		return ""
+	}
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+		return href
+	}
+	bu, err := url.Parse(base)
+	if err != nil {
+		return href
+	}
+	ru, err := url.Parse(href)
+	if err != nil {
+		return href
+	}
+	return bu.ResolveReference(ru).String()
+}
+
+func parseKeywords(sel *goquery.Selection) []string {
+	if sel == nil || sel.Length() == 0 {
+		return nil
+	}
+	var ks []string
+	seen := map[string]bool{}
+	add := func(raw string) {
+		text := strings.Trim(strings.Join(strings.Fields(raw), " "), ";；,， ")
+		if text == "" || seen[text] {
+			return
+		}
+		seen[text] = true
+		ks = append(ks, text)
+	}
+	sel.Find("a").Each(func(_ int, a *goquery.Selection) {
+		add(a.Text())
+	})
+	if len(ks) > 0 {
+		return ks
+	}
+	for _, part := range strings.FieldsFunc(sel.Text(), func(r rune) bool {
+		return r == ';' || r == '；'
+	}) {
+		add(part)
+	}
+	return ks
 }
 
 // pickYearFromDetail 从详情页取发表年份。
@@ -356,34 +427,23 @@ func pickYearFromDetail(topTip, headTime string) (year int, onlineFirst bool) {
 	return year, strings.Contains(headTime, onlineFirstMark)
 }
 
-func GetPaperMainBody(href string, cookie string) (string, error) {
-	params, err := GetPaperMainBodyParams(href, cookie)
+func GetPaperMainBody(href string) (string, error) {
+	params, err := GetPaperMainBodyParams(href)
 	if err != nil {
 		return "", err
 	}
-
-	var paperMainBodyJson string
-	cnkiThrottle.waitTurn()
-
-	c := newCollector(cookie)
-	c.OnResponse(func(r *colly.Response) {
-		paperMainBodyJson = string(r.Body)
-	})
-	c.OnError(func(r *colly.Response, err error) {
-		fmt.Println("[ERROR] Request failed:", err)
-	})
-
-	if err := c.Visit("https://kns.cnki.net/nzkhtml/knsread/litNotes/getPaperInfo?fileName=" +
+	rawURL := "https://kns.cnki.net/nzkhtml/knsread/litNotes/getPaperInfo?fileName=" +
 		params.FileName + "&tableName=" + params.TableName + "&dbCode=" + params.DbCode +
-		"&invoice=" + params.Invoice); err != nil {
+		"&invoice=" + params.Invoice
+	resp, err := cnkiGet(rawURL, href)
+	if err != nil {
 		return "", err
 	}
-
-	return RestoreArticleText(paperMainBodyJson)
+	return RestoreArticleText(string(resp.Body))
 }
 
 // GetSourceFactors 获取期刊影响因子；同一期刊在进程内缓存 24 小时，避免重复请求
-func GetSourceFactors(href string, cookie string) (float64, float64, error) {
+func GetSourceFactors(href string) (float64, float64, error) {
 	if entry, ok := getCachedFactor(href); ok {
 		if entry.Failed {
 			return 0, 0, fmt.Errorf("该期刊页此前未解析到评价信息（%.0f 分钟内不再重试）: %s",
@@ -392,19 +452,19 @@ func GetSourceFactors(href string, cookie string) (float64, float64, error) {
 		return entry.Composite, entry.Comprehensive, nil
 	}
 
-	var compositeFactor float64
-	var comprehensiveFactor float64
-	var found bool
-	cnkiThrottle.waitTurn()
-
-	c := newCollector(cookie)
-	c.OnHTML("ul#evaluateInfo", func(e *colly.HTMLElement) {
-		compositeFactor, comprehensiveFactor = extractImpactFactors(e.DOM)
-		found = true
-	})
-
-	if err := c.Visit(href); err != nil {
+	resp, err := cnkiGet(href, knsHome)
+	if err != nil {
 		return 0, 0, err
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(resp.Body)))
+	if err != nil {
+		return 0, 0, err
+	}
+	eval := doc.Find("ul#evaluateInfo")
+	found := eval.Length() > 0
+	var compositeFactor, comprehensiveFactor float64
+	if found {
+		compositeFactor, comprehensiveFactor = extractImpactFactors(eval)
 	}
 
 	// 只有确实解析到评价信息才写长缓存；失败写入短 TTL 负缓存，

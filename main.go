@@ -1,21 +1,31 @@
 package main
 
 import (
-	"context"
 	"CNKICrawlerMCP/types"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
+const serverInstructions = `校园网 IP 自动登录的知网工具, 不需要用户提供账号, 机构登录或 Cookie.
+连接校园网时直接调用工具. 只有用户明确粘贴了 Cookie 才使用 SetGlobalCookie.
+1. ScanPaper 检索题录.
+2. GetPaperInfo 查看摘要和关键词.
+3. DownloadPaper 把 PDF 保存到本机, 并一并返回摘要和关键词.
+不要自己请求 bar.cnki.net, docdown.cnki.net 或返回结果里的 PDF 链接, 那些地址离开本服务的会话会失败.`
+
 func main() {
-	s := server.NewMCPServer("CNKICrawlerMcp", "1.0.0")
+	log.SetOutput(os.Stderr)
+	s := server.NewMCPServer("CNKICrawlerMcp", "1.1.0", server.WithInstructions(serverInstructions))
 	s.AddTool(mcp.Tool{
 		Name:        "ScanPaper",
-		Description: "通过关键词进行论文检索（主题字段）。返回标题、作者、来源期刊、发表年份及影响因子。默认按发表时间倒序，Year/Date 取自知网“发表时间”列；OnlineFirst 为 true 时该文献尚无正式刊期，Year 是网络首发日期而非刊期年份",
+		Description: "在校园网下按主题检索知网. 自动 IP 登录, 不需要 Cookie. 返回标题, 作者, 来源, 发表年份, 摘要页链接 Href. 要摘要和关键词再调 GetPaperInfo, 要 PDF 再把 Href 传给 DownloadPaper",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -29,7 +39,7 @@ func main() {
 	}, handleScanPaper)
 	s.AddTool(mcp.Tool{
 		Name:        "GetPaperInfo",
-		Description: "通过ScanPaper工具获取的论文链接，获取论文的摘要、发表年份、下载链接、在线阅读链接等信息",
+		Description: "用 ScanPaper 返回的 Href 读取标题, 作者, 关键词, 摘要和发表年份. HasPDF 表示这篇在当前校园网下有 PDF 按钮. 不下载文件, 下载请调用 DownloadPaper",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -38,6 +48,18 @@ func main() {
 			Required: []string{"href"},
 		},
 	}, handleGetPaperInfo)
+	s.AddTool(mcp.Tool{
+		Name:        "DownloadPaper",
+		Description: "用 ScanPaper 或 GetPaperInfo 的论文 Href 下载 PDF 到本机. 校园网 IP 自动登录, 不需要个人账号. 成功时返回本地路径, 标题, 关键词和摘要. 不要改用浏览器或 curl 去打开 PDF 链接",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"href":    map[string]string{"type": "string", "description": "ScanPaper 返回的论文摘要页链接 Href"},
+				"saveDir": map[string]string{"type": "string", "description": "可选. 保存目录, 或以 .pdf 结尾的完整路径. 默认保存到用户下载目录下的 CNKI 文件夹"},
+			},
+			Required: []string{"href"},
+		},
+	}, handleDownloadPaper)
 	s.AddTool(mcp.Tool{
 		Name:        "GetPaperMainBody",
 		Description: "通过GetPaperInfo获取到的Html在线阅读链接，获取论文的正文内容",
@@ -51,7 +73,7 @@ func main() {
 	}, handleGetPaperMainBody)
 	s.AddTool(mcp.Tool{
 		Name:        "SetGlobalCookie",
-		Description: "设置CNKIrawlerMCP的全局Cookie，如果用户没有明确要求设置cookie不要使用该工具，系统默认会自动通过IP登录获取Cookie并设置到全局变量中",
+		Description: "仅当用户明确粘贴了浏览器 Cookie 时才调用. 校园网下不要调用, 服务会自动 IP 登录",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -62,13 +84,15 @@ func main() {
 	}, handleSetGlobalCookie)
 	s.AddTool(mcp.Tool{
 		Name:        "GetGlobalCookie",
-		Description: "获取CNKIrawlerMCP的全局Cookie",
+		Description: "调试用: 查看当前发给 kns.cnki.net 的 Cookie. 不要拿它去自行下载 PDF",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 		},
 	}, handleGetGlobalCookie)
 
-	server.ServeStdio(s)
+	if err := server.ServeStdio(s); err != nil {
+		log.Printf("MCP 退出: %v", err)
+	}
 
 	/*
 		// Debug 调试
@@ -136,10 +160,10 @@ type scanPaperArgs struct {
 
 // searchWithRelogin 检索；若发现 Cookie 失效则自动重新 IP 登录后重试一次
 func searchWithRelogin(value string, pageNum, pageSize int) ([]types.Paper, error) {
-	papers, err := Search(value, pageNum, pageSize, GetGlobalCookie())
+	papers, err := Search(value, pageNum, pageSize)
 	if errors.Is(err, ErrCookieExpired) {
 		if ok, loginErr := RefreshLogin(); ok && loginErr == nil {
-			return Search(value, pageNum, pageSize, GetGlobalCookie())
+			return Search(value, pageNum, pageSize)
 		}
 	}
 	return papers, err
@@ -162,7 +186,7 @@ func enrichSourceFactors(papers []types.Paper) {
 			papers[i].SourceComprehensiveFactor = v.comprehensive
 			continue
 		}
-		composite, comprehensive, err := GetSourceFactors(link, GetGlobalCookie())
+		composite, comprehensive, err := GetSourceFactors(link)
 		if err != nil {
 			continue
 		}
@@ -252,7 +276,7 @@ func handleGetPaperInfo(ctx context.Context, request mcp.CallToolRequest) (*mcp.
 			IsError: true,
 		}, nil
 	}
-	paperInfo, err := GetPaperInfo(args.Href, GetGlobalCookie())
+	paperInfo, err := GetPaperInfo(args.Href)
 	if err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
@@ -300,7 +324,7 @@ func handleGetPaperMainBody(ctx context.Context, request mcp.CallToolRequest) (*
 			IsError: true,
 		}, nil
 	}
-	paperMainBody, err := GetPaperMainBody(args.Href, GetGlobalCookie())
+	paperMainBody, err := GetPaperMainBody(args.Href)
 	if err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{

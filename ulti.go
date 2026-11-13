@@ -8,12 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/gocolly/colly/v2"
 )
 
 // extractImpactFactors 提取复合/综合影响因子
@@ -132,9 +130,16 @@ func stripHTML(htmlStr string) string {
 	text = regexp.MustCompile(`\s+`).ReplaceAllString(text, " ")
 	return text
 }
-func GetPaperMainBodyParams(href string, cookie string) (types.PaperMainBodyParams, error) {
-	redirectUrl := getRedirect(href, cookie)
-	params, err := url.Parse(getRedirect(redirectUrl, cookie))
+func GetPaperMainBodyParams(href string) (types.PaperMainBodyParams, error) {
+	redirectUrl := getRedirect(href)
+	if redirectUrl == "" {
+		return types.PaperMainBodyParams{}, fmt.Errorf("在线阅读页没有跳转")
+	}
+	next := getRedirect(redirectUrl)
+	if next == "" {
+		return types.PaperMainBodyParams{}, fmt.Errorf("在线阅读页第二次跳转失败")
+	}
+	params, err := url.Parse(next)
 	if err != nil {
 		return types.PaperMainBodyParams{}, err
 	}
@@ -147,43 +152,30 @@ func GetPaperMainBodyParams(href string, cookie string) (types.PaperMainBodyPara
 	}
 	return paperMainBodyParams, nil
 }
-func getRedirect(href string, cookie string) string {
-	var redirectUrl string
-	c := colly.NewCollector()
-	//c.SetProxy("http://127.0.0.1:8080") // 抓包测试代理
-	c.OnRequest(func(r *colly.Request) {
-		r.Headers.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-		r.Headers.Set("Cookie", cookie)
-		r.Headers.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
-		r.Headers.Set("Referer", "https://kns.cnki.net/")
-	})
-	c.SetRedirectHandler(func(r *http.Request, via []*http.Request) error {
-		redirectUrl = r.URL.String()
-		return http.ErrUseLastResponse
-	})
-	c.Visit(href)
-	return redirectUrl
-}
-func CheckLogin() (bool, error) {
-	if GetGlobalCookie() != "" {
-		return true, nil
+func getRedirect(href string) string {
+	req, err := http.NewRequest(http.MethodGet, href, nil)
+	if err != nil {
+		return ""
 	}
-	return RefreshLogin()
+	resp, err := cnkiDo(req, false)
+	if err != nil || resp == nil {
+		return ""
+	}
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		return ""
+	}
+	base, err := url.Parse(href)
+	if err != nil {
+		return loc
+	}
+	ref, err := url.Parse(loc)
+	if err != nil {
+		return loc
+	}
+	return base.ResolveReference(ref).String()
 }
 
-// RefreshLogin 强制重新做一次 IP 登录并覆盖全局 Cookie。
-// 原实现只在 Cookie 为空时登录，Cookie 过期后不会刷新，导致后续检索静默返回空结果。
-func RefreshLogin() (bool, error) {
-	cookie, err := IpLogin()
-	if err != nil {
-		return false, err
-	}
-	if cookie == "" {
-		return false, fmt.Errorf("IP 登录未获取到 Cookie，请确认处于校园网环境，或手动调用 SetGlobalCookie 设置")
-	}
-	SetGlobalCookie(cookie)
-	return true, nil
-}
 func ParseArgs[T any](args any) (*T, error) {
 	argsMap, ok := args.(map[string]interface{})
 	if !ok {
@@ -199,73 +191,4 @@ func ParseArgs[T any](args any) (*T, error) {
 		return nil, fmt.Errorf("解析参数失败: %w", err)
 	}
 	return &result, nil
-}
-
-// IpLogin 通过访问登录接口获取 Cookie，并返回组合后的 Cookie 字符串
-func IpLogin() (string, error) {
-	c := colly.NewCollector()
-
-	var Cookie string                     // 最终组合Cookie字符串
-	var Cookies = make(map[string]string) // 存储单个cookie的name和value
-
-	c.OnRequest(func(r *colly.Request) {
-		r.Headers.Set("Content-Type", "application/json")
-	})
-
-	// colly 默认是同步的，PostRaw 返回时回调已执行完毕，无需 WaitGroup。
-	// 原实现在 OnResponse / OnError 里各调一次 wg.Done()，请求出错时还会再调一次，
-	// 会 panic: sync: negative WaitGroup counter 并打挂整个 MCP 进程。
-	c.OnResponse(func(r *colly.Response) {
-		var resp types.LoginResponse
-		body := strings.Trim(string(r.Body), "()")
-		if err := json.Unmarshal([]byte(body), &resp); err != nil {
-			return
-		}
-		if !resp.IsSuccess {
-			return
-		}
-		for _, cookieStr := range r.Headers.Values("Set-Cookie") {
-			name, value := parseCookie(cookieStr)
-			if name != "" {
-				Cookies[name] = value
-			}
-		}
-		Cookie = buildCookieHeader(Cookies)
-	})
-
-	c.OnError(func(r *colly.Response, err error) {
-		Cookie = ""
-	})
-
-	if err := c.PostRaw("https://login.cnki.net/TopLoginCore/api/loginapi/IpLoginFlushPo", []byte("{}")); err != nil {
-		return "", err
-	}
-	return Cookie, nil
-}
-
-// buildCookieHeader 将 cookies map 转换为 "name=value; name2=value2" 格式的字符串
-func buildCookieHeader(cookies map[string]string) string {
-	names := make([]string, 0, len(cookies))
-	for name := range cookies {
-		names = append(names, name)
-	}
-	sort.Strings(names) // map 遍历顺序随机，排序保证 Cookie 头稳定
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, name+"="+cookies[name])
-	}
-	return strings.Join(parts, "; ")
-}
-
-// parseCookie 解析单个 Set-Cookie 字符串，返回 name 和 value
-func parseCookie(cookieStr string) (string, string) {
-	parts := strings.SplitN(cookieStr, ";", 2)
-	if len(parts) == 0 {
-		return "", ""
-	}
-	kv := strings.SplitN(strings.TrimSpace(parts[0]), "=", 2)
-	if len(kv) != 2 {
-		return "", ""
-	}
-	return strings.TrimSpace(kv[0]), kv[1]
 }

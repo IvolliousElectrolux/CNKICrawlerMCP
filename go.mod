@@ -4,7 +4,6 @@ go 1.24.5
 
 require (
 	github.com/PuerkitoBio/goquery v1.11.0
-	github.com/gocolly/colly/v2 v2.3.0
 	github.com/mark3labs/mcp-go v0.46.0
 )
 

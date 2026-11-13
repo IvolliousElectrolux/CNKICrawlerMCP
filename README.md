@@ -1,85 +1,55 @@
 # CNKICrawlerMCP
 ![CNKICrawlerMCP](https://socialify.git.ci/Mangofang/CNKICrawlerMCP/image?custom_language=Go&font=Jost&forks=1&issues=1&language=1&logo=https%3A%2F%2Favatars.githubusercontent.com%2Fu%2F182288589%3Fs%3D200%26v%3D4&name=1&owner=1&pattern=Plus&stargazers=1&theme=Auto)
-一个基于ModelContextProtocol(MCP)的中国知网（CNKI）学术论文爬虫服务，为AI助手（如ClaudeDesktop、Cursor、CluadeCode等）提供论文检索、信息获取和正文内容提取能力。
+给 Cursor 用的知网 MCP. 连着校园网时可以检索论文, 查看关键词和摘要, 并下载 PDF.
 
-## ✨ 功能特性
+## 功能
 
-- **论文搜索**：通过关键词检索CNKI学术论文，返回标题、作者、来源等信息
-- **论文详情**：获取论文的摘要、与正文（仅订阅套餐中允许查看的）
-- **正文提取**：从HTML在线阅读页面提取论文正文内容（纯文本格式）
-- **影响因子**：自动获取期刊的复合影响因子和综合影响因子
+连着校园网即可使用, 不需要个人账号, 也不需要再打开机构登录页. 服务会自己做 IP 登录.
 
-## 🛠️ 安装与运行
+- 按主题检索论文
+- 读取关键词和摘要
+- 把 PDF 下载到本机 (机构订购范围内)
+- 读取在线阅读正文, 以及期刊影响因子
 
-### 前提条件
+离开校园网后 IP 登录会失败, 这时无法检索和下载.
 
-- <s>需要登录并链接可用于IP登录的校园网环境</s>(现在可通过手动设置全局Cookie进行使用)
-- Go 1.24.5 或更高版本（从源码构建时需要）
+## 安装
 
-### 从源码构建
+可执行文件由 GitHub Actions 编译, 不要在本机安装 Go 或本地编译. 推送到 GitHub 后打开 Actions 里的 `build`, 下载名为 `CNKICrawlerMCP` 的产物, 使用其中的 `CNKICrawlerMCP.exe`.
 
-```bash
-# 安装依赖
-go mod download
+### 接入 Cursor
 
-# 构建可执行文件
-go build
-```
-
-## 📚 使用方法
-
-### 集成到Claude Code
-
-在Claude Code的配置文件.claude.json中添加以下配置：
+Cursor 的 MCP 要直接启动 exe, 不要套一层 `cmd /c`, 否则标准输出会被干扰, 工具调用会失败. 在 Cursor 的 MCP 配置里写成:
 
 ```json
 {
-	"CNKICrawlerMCP": {
-	  "args": [
-		"/c",
-		"<EXE的绝对路径 如:D/CNKICrawlerMCP/CNKICrawlerMCP.exe>"
-	  ],
-	  "command": "cmd",
-	  "env": {}
-	}
+  "mcpServers": {
+    "CNKICrawlerMCP": {
+      "command": "E:\\git-repo\\CNKICrawlerMCP\\CNKICrawlerMCP.exe"
+    }
+  }
 }
 ```
 
-### 集成到其他MCP客户端
+把 `command` 换成 exe 的实际路径. 可选环境变量 `CNKI_DOWNLOAD_DIR` 用来指定 PDF 保存目录. 不设置时保存到用户目录下的 `Downloads\CNKI` (资源管理器里一般显示为下载).
 
-参考对应客户端的MCP服务器配置文档，将CNKICrawlerMCP作为外部工具添加。
+## 工具
 
-## 🛠️ 可用工具
-
-### 1. ScanPaper - 论文检索
-
-通过关键词检索CNKI学术论文。
-
-### 2. GetPaperInfo - 获取论文信息
-
-通过ScanPaper获取的论文链接，获取详细论文信息。
-
-### 3. GetPaperMainBody - 获取论文正文
-
-通过GetPaperInfo获取的HTML在线阅读链接，提取论文正文内容。
-
-### 4. SetGlobalCookie - 手动设置全局Cookie
-
-可在知网登陆后手动使用该工具将Cookie保存到全局，以便后续工具使用。
-
-
-### 5. handleGetGlobalCookie - 获取全局Cookie
-
-获取当前全局Cookie的值，用于调试和手动设置。
+1. `ScanPaper`: 主题检索, 返回题录和摘要页链接 `Href`.
+2. `GetPaperInfo`: 用 `Href` 读取标题, 作者, 关键词和摘要.
+3. `DownloadPaper`: 用 `Href` 下载 PDF, 同时返回关键词, 摘要和本地路径. 不要自己去请求页面上的下载地址.
+4. `GetPaperMainBody`: 用在线阅读链接提取正文.
+5. `SetGlobalCookie` / `GetGlobalCookie`: 仅供调试. 校园网下不要手动塞 Cookie.
 
 ## 🏗️ 项目结构
 
 ```
 CNKICrawlerMCP/
-├── main.go              # MCP服务器主入口，工具定义和路由
-├── scanner.go           # 核心爬虫逻辑：搜索、信息获取、正文提取
-├── ulti.go              # 工具函数：影响因子提取、HTML解析、登录逻辑
-├── globalCookie.go      # 全局Cookie管理
+├── main.go              # MCP 服务器入口和工具定义
+├── session.go           # 校园网 IP 登录和按域名保存的原始 Cookie
+├── scanner.go           # 检索, 摘要, 关键词, 正文
+├── download.go          # PDF 下载
+├── ulti.go              # 影响因子和 HTML 解析
 ├── types/
 │   └── types.go         # 数据结构定义
 ├── go.mod               # Go模块定义
