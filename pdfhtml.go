@@ -131,9 +131,16 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			if line == 0 {
 				line = run.y
 			}
+			// 浏览器字体比知网里的 Times 宽, 整行会冲出页边. 按 PDF 里的字宽把这一段压回去.
+			fs := size * htmlScale
+			width := run.w * htmlScale
+			if width < fs*0.4 {
+				width = fs * 0.5 * float64(len([]rune(run.s)))
+			}
+			height := fs * 1.35
 			boxes = append(boxes, htmlBox{line, fmt.Sprintf(
-				`<span style="left:%.1fpx;top:%.1fpx;font-size:%.1fpx">%s</span>`,
-				left, top, size*htmlScale, html.EscapeString(run.s),
+				`<svg class="run" style="left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx" viewBox="0 0 %.2f %.2f"><text xml:space="preserve" x="0" y="%.2f" font-size="%.2f" textLength="%.2f" lengthAdjust="spacingAndGlyphs">%s</text></svg>`,
+				left, top, width, height, width, height, fs*0.8, fs, width, html.EscapeString(run.s),
 			)})
 		}
 		for k, im := range images {
@@ -178,10 +185,11 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 	doc.WriteString("<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<title>")
 	doc.WriteString(html.EscapeString(strings.TrimSpace(title)))
 	doc.WriteString("</title>\n<style>\n")
-	doc.WriteString("body{margin:0;background:#f3f3f3;color:#111;font-family:\"Source Han Serif SC\",\"Noto Serif CJK SC\",\"SimSun\",serif}\n")
+	doc.WriteString("body{margin:0;background:#f3f3f3;color:#111;font-family:\"Times New Roman\",\"Source Han Serif SC\",\"Noto Serif CJK SC\",SimSun,serif}\n")
 	doc.WriteString("h1{font-size:22px;font-weight:600;margin:24px auto 8px;max-width:920px;padding:0 16px}\n")
 	doc.WriteString(".page{position:relative;margin:16px auto;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.15);overflow:hidden}\n")
-	doc.WriteString(".page span{position:absolute;white-space:pre;line-height:1;color:#111}\n")
+	doc.WriteString(".page svg.run{position:absolute;overflow:visible}\n")
+	doc.WriteString(".page svg.run text{font-family:\"Times New Roman\",\"Source Han Serif SC\",\"Noto Serif CJK SC\",SimSun,serif;fill:#111}\n")
 	doc.WriteString(".page img{position:absolute}\n")
 	doc.WriteString(".note{max-width:920px;margin:12px auto;padding:0 16px;font:14px sans-serif;color:#666}\n")
 	doc.WriteString("</style>\n</head>\n<body>\n")
