@@ -122,16 +122,6 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			walkStream(contents, page.Resources(), matIdent(), 0, &glyphs, &images, book)
 		}
 		boxes := make([]htmlBox, 0, len(glyphs)+len(images))
-		// 整页大图就是这一页本身. 上面再画一层文字会盖住正文, 这一层往往还是错的.
-		pagePicture := false
-		for _, im := range images {
-			minX, minY, maxX, maxY := unitBox(im.ctm)
-			if maxX-minX >= pw*0.85 && maxY-minY >= ph*0.85 {
-				pagePicture = true
-				break
-			}
-		}
-		if !pagePicture {
 		for _, run := range groupGlyphs(glyphs) {
 			text := strings.TrimSpace(run.s)
 			if text == "" {
@@ -168,7 +158,6 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 				left, top, width, height, width, height, faceStyle, fs*0.8, fs, width, html.EscapeString(run.s),
 			)})
 		}
-		}
 		for k, im := range images {
 			minX, minY, maxX, maxY := unitBox(im.ctm)
 			left := (minX - ox) * htmlScale
@@ -176,6 +165,10 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			width := (maxX - minX) * htmlScale
 			height := (maxY - minY) * htmlScale
 			if width < 2 || height < 2 {
+				continue
+			}
+			// 盖住整页的是页面底图, 不是插图. 留下的话正文就不成文字了.
+			if pw > 0 && ph > 0 && (maxX-minX) >= pw*0.85 && (maxY-minY) >= ph*0.85 {
 				continue
 			}
 			ext, data := imageFile(im.obj, rawImages)
