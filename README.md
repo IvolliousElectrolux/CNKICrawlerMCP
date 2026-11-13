@@ -55,6 +55,7 @@ CNKICrawlerMCP/
 ├── download.go          # PDF 下载和按论文分目录
 ├── zotero.go            # Zotero BibTeX
 ├── pdfhtml.go           # 从 PDF 直接提取文字和图片, 写成 HTML
+├── fontsubset.go       # 把 CID 字体里用到的轮廓嵌进 HTML
 ├── ulti.go              # 影响因子和 HTML 解析
 ├── types/
 │   └── types.go         # 数据结构定义

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/zlib"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"html"
 	"image"
@@ -57,6 +60,7 @@ func (m mat3) apply(x, y float64) (float64, float64) {
 type glyph struct {
 	x, y, size, w float64
 	s             string
+	face          string
 	line          float64
 }
 
@@ -94,6 +98,7 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 		return out, err
 	}
 	rawImages := indexRawImages(pdfBytes)
+	book := &fontBook{byPtr: map[*pdf.Font]*fontSlot{}, bySum: map[string]*embeddedFace{}}
 	n := r.NumPage()
 	if n > 500 {
 		n = 500
@@ -114,7 +119,7 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 		var images []placedImg
 		contents := page.V.Key("Contents")
 		if contents.Kind() != pdf.Null {
-			walkStream(contents, page.Resources(), matIdent(), 0, &glyphs, &images)
+			walkStream(contents, page.Resources(), matIdent(), 0, &glyphs, &images, book)
 		}
 		boxes := make([]htmlBox, 0, len(glyphs)+len(images))
 		for _, run := range groupGlyphs(glyphs) {
@@ -144,9 +149,13 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 				width = fs * 0.5 * float64(len([]rune(run.s)))
 			}
 			height := fs * 1.35
+			faceStyle := ""
+			if run.face != "" {
+				faceStyle = fmt.Sprintf(` style="font-family:'%s',SimSun,serif"`, run.face)
+			}
 			boxes = append(boxes, htmlBox{line, fmt.Sprintf(
-				`<svg class="run" style="left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx" viewBox="0 0 %.2f %.2f"><text xml:space="preserve" x="0" y="%.2f" font-size="%.2f" textLength="%.2f" lengthAdjust="spacingAndGlyphs">%s</text></svg>`,
-				left, top, width, height, width, height, fs*0.8, fs, width, html.EscapeString(run.s),
+				`<svg class="run" style="left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx" viewBox="0 0 %.2f %.2f"><text%s xml:space="preserve" x="0" y="%.2f" font-size="%.2f" textLength="%.2f" lengthAdjust="spacingAndGlyphs">%s</text></svg>`,
+				left, top, width, height, width, height, faceStyle, fs*0.8, fs, width, html.EscapeString(run.s),
 			)})
 		}
 		for k, im := range images {
@@ -196,6 +205,7 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 	doc.WriteString(".page{position:relative;margin:16px auto;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.15);overflow:hidden}\n")
 	doc.WriteString(".page svg.run{position:absolute;overflow:visible}\n")
 	doc.WriteString(".page svg.run text{font-family:\"Times New Roman\",\"Source Han Serif SC\",\"Noto Serif CJK SC\",SimSun,serif;fill:#111}\n")
+	doc.WriteString(book.css())
 	doc.WriteString(".page img{position:absolute}\n")
 	doc.WriteString(".note{max-width:920px;margin:12px auto;padding:0 16px;font:14px sans-serif;color:#666}\n")
 	doc.WriteString("</style>\n</head>\n<body>\n")
@@ -532,7 +542,7 @@ func shiftLastRune(s string, delta int) string {
 	return string(rs)
 }
 
-func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph, images *[]placedImg) {
+func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph, images *[]placedImg, book *fontBook) {
 	if depth > 6 || strm.IsNull() {
 		return
 	}
@@ -584,7 +594,11 @@ func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph,
 				if ch < 32 || ch == '\uFFFD' || (ch >= 0xE000 && ch <= 0xF8FF) {
 					continue
 				}
-				*glyphs = append(*glyphs, glyph{x: x, y: y, size: size, w: adv, s: string(ch)})
+				face := ""
+				if book != nil {
+					face = book.use(g.font, code, ch)
+				}
+				*glyphs = append(*glyphs, glyph{x: x, y: y, size: size, w: adv, s: string(ch), face: face})
 			}
 			tx := w0/1000*g.tfs + g.tc
 			if strings.ContainsRune(text, ' ') {
@@ -634,7 +648,7 @@ func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph,
 				if res.IsNull() {
 					res = resources
 				}
-				walkStream(obj, res, fm.mul(g.ctm), depth+1, glyphs, images)
+				walkStream(obj, res, fm.mul(g.ctm), depth+1, glyphs, images, book)
 			}
 		case "BT":
 			g.tm = matIdent()
@@ -825,7 +839,7 @@ func groupGlyphs(gs []glyph) []glyph {
 			if limit < 4 {
 				limit = 4
 			}
-			if pitch >= -0.25*last.size && pitch <= limit {
+			if g.face == last.face && pitch >= -0.25*last.size && pitch <= limit {
 				cur = append(cur, g)
 				continue
 			}
@@ -967,7 +981,7 @@ func appendNote(out []glyph, n glyph) []glyph {
 	}
 	prev := &out[len(out)-1]
 	pitch := n.x - prev.x
-	if math.Abs(prev.size-n.size) < 0.5 && pitch >= -0.3*n.size && pitch <= math.Max(prev.size, n.size)*1.6 {
+	if prev.face == n.face && math.Abs(prev.size-n.size) < 0.5 && pitch >= -0.3*n.size && pitch <= math.Max(prev.size, n.size)*1.6 {
 		prev.s += n.s
 		if n.x+n.w > prev.x+prev.w {
 			prev.w = n.x + n.w - prev.x
@@ -1328,4 +1342,141 @@ func absInt(v int) int {
 		return -v
 	}
 	return v
+}
+
+// 有些知网 CID 字体没有 cmap, ToUnicode 又和真正画出来的轮廓对不上.
+// 把用到的轮廓嵌进页面后, 浏览器按轮廓画, 不再拿系统字体去套那个错误码位.
+type embeddedFace struct {
+	family string
+	raw    []byte
+	glyphs map[int]rune
+}
+
+type fontSlot struct {
+	face  *embeddedFace
+	gidOf []int
+}
+
+type fontBook struct {
+	byPtr map[*pdf.Font]*fontSlot
+	bySum map[string]*embeddedFace
+	faces []*embeddedFace
+}
+
+func (b *fontBook) use(f *pdf.Font, cid int, ch rune) string {
+	if b == nil || f == nil || ch <= 0 || ch >= 0xFFFF {
+		return ""
+	}
+	slot, ok := b.byPtr[f]
+	if !ok {
+		slot = b.bind(f)
+		b.byPtr[f] = slot
+	}
+	if slot == nil || slot.face == nil {
+		return ""
+	}
+	gid := cid
+	if slot.gidOf != nil {
+		if cid < 0 || cid >= len(slot.gidOf) {
+			return ""
+		}
+		gid = slot.gidOf[cid]
+	}
+	if gid <= 0 {
+		return ""
+	}
+	if _, exists := slot.face.glyphs[gid]; !exists {
+		slot.face.glyphs[gid] = ch
+	}
+	return slot.face.family
+}
+
+func (b *fontBook) bind(f *pdf.Font) *fontSlot {
+	raw, gidOf := cidFontFile(f)
+	if len(raw) == 0 {
+		return &fontSlot{}
+	}
+	sum := sha256.Sum256(raw)
+	face := b.bySum[string(sum[:])]
+	if face == nil {
+		face = &embeddedFace{
+			family: fmt.Sprintf("cnki%d", len(b.faces)),
+			raw:    raw,
+			glyphs: map[int]rune{},
+		}
+		b.bySum[string(sum[:])] = face
+		b.faces = append(b.faces, face)
+	}
+	return &fontSlot{face: face, gidOf: gidOf}
+}
+
+func (b *fontBook) css() string {
+	if b == nil {
+		return ""
+	}
+	var s strings.Builder
+	for _, face := range b.faces {
+		ttf, err := subsetTTF(face.raw, face.glyphs)
+		if err != nil || len(ttf) == 0 {
+			continue
+		}
+		fmt.Fprintf(&s, "@font-face{font-family:%s;src:url(data:font/ttf;base64,%s) format(\"truetype\")}\n", face.family, base64.StdEncoding.EncodeToString(ttf))
+	}
+	return s.String()
+}
+
+func cidFontFile(f *pdf.Font) (raw []byte, gidOf []int) {
+	defer func() { recover() }()
+	if f == nil {
+		return nil, nil
+	}
+	enc := f.V.Key("Encoding").Name()
+	if enc != "Identity-H" && enc != "Identity-V" {
+		return nil, nil
+	}
+	kids := f.V.Key("DescendantFonts")
+	if kids.Kind() != pdf.Array || kids.Len() == 0 {
+		return nil, nil
+	}
+	cid := kids.Index(0)
+	ff := cid.Key("FontDescriptor").Key("FontFile2")
+	if ff.Kind() != pdf.Stream {
+		return nil, nil
+	}
+	rc := ff.Reader()
+	if rc == nil {
+		return nil, nil
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil || len(data) < 12 || len(data) > 20<<20 {
+		return nil, nil
+	}
+	scaler := binary.BigEndian.Uint32(data[:4])
+	if scaler != 0x00010000 && scaler != 0x74727565 {
+		return nil, nil
+	}
+	return data, readGIDMap(cid)
+}
+
+func readGIDMap(cid pdf.Value) (gidOf []int) {
+	defer func() { recover() }()
+	m := cid.Key("CIDToGIDMap")
+	if m.Kind() != pdf.Stream {
+		return nil
+	}
+	rc := m.Reader()
+	if rc == nil {
+		return nil
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil || len(b) < 2 {
+		return nil
+	}
+	gidOf = make([]int, len(b)/2)
+	for i := range gidOf {
+		gidOf[i] = int(b[i*2])<<8 | int(b[i*2+1])
+	}
+	return gidOf
 }
