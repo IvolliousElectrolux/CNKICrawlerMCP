@@ -159,6 +159,11 @@ const onlineFirstMark = "网络首发"
 // 统一取其中出现的第一个 19xx/20xx 四位年份；取不到时返回 0 而不是瞎猜。
 var yearRe = regexp.MustCompile(`(?:19|20)\d{2}`)
 
+// pubRe 匹配已正式出版的题录, 如 "2026 ,35 (19) : 86-89".
+var pubRe = regexp.MustCompile(`(?:19|20)\d{2}\s*[,，]\s*(\d+)\s*[（(]\s*([^)）]+)\s*[)）]\s*[:：]\s*([0-9A-Za-z]+(?:\s*[-–—~～]\s*[0-9A-Za-z]+)?)`)
+
+var doiRe = regexp.MustCompile(`10\.\d{4,9}/[-._;()/:A-Za-z0-9]+`)
+
 // extractPublishDate 解析 `td.date` 单元格，返回发表时间原文与年份。
 func extractPublishDate(dateElem *goquery.Selection) (date string, year int) {
 	date = strings.Join(strings.Fields(strings.TrimSpace(dateElem.Text())), " ")
@@ -345,6 +350,8 @@ func getPaperInfo(href string) (types.PaperInfo, error) {
 	topTip := doc.Find("div.top-tip").First().Text()
 	headTime := doc.Find("div.head-time").First().Text()
 	paperInfo.Year, paperInfo.OnlineFirst = pickYearFromDetail(topTip, headTime)
+	paperInfo.URL = href
+	fillPublication(doc, &paperInfo)
 	if paperInfo.Authors == nil {
 		paperInfo.Authors = []string{}
 	}
@@ -425,6 +432,54 @@ func pickYearFromDetail(topTip, headTime string) (year int, onlineFirst bool) {
 		year, _ = strconv.Atoi(s)
 	}
 	return year, strings.Contains(headTime, onlineFirstMark)
+}
+
+// fillPublication 从题录行取出期刊, 卷, 期, 页码和 DOI.
+func fillPublication(doc *goquery.Document, info *types.PaperInfo) {
+	tip := doc.Find("div.top-tip").First()
+	tip.Find("a").Each(func(_ int, a *goquery.Selection) {
+		if info.Journal != "" {
+			return
+		}
+		text := strings.Trim(strings.Join(strings.Fields(a.Text()), " "), ".。 ")
+		if text == "" || strings.Contains(text, "查看") || strings.Contains(text, "帮助") {
+			return
+		}
+		info.Journal = text
+	})
+	text := strings.Join(strings.Fields(tip.Text()), " ")
+	text = strings.ReplaceAll(text, "查看该刊数据库收录来源", "")
+	if info.Journal == "" {
+		if loc := yearRe.FindStringIndex(text); loc != nil && loc[0] > 0 {
+			name := strings.Trim(text[:loc[0]], ".。,， ")
+			if name != "" && !strings.Contains(name, "查看") {
+				info.Journal = name
+			}
+		}
+	}
+	if m := pubRe.FindStringSubmatch(text); len(m) == 4 {
+		info.Volume = m[1]
+		info.Issue = strings.TrimSpace(m[2])
+		info.Pages = strings.TrimSpace(m[3])
+	}
+	info.DOI = findDOI(doc)
+}
+
+func findDOI(doc *goquery.Document) string {
+	found := ""
+	doc.Find("div.row, li").Each(func(_ int, row *goquery.Selection) {
+		if found != "" {
+			return
+		}
+		label := row.Find(".rowtit").Text()
+		if strings.Contains(strings.ToUpper(label), "DOI") {
+			found = doiRe.FindString(row.Text())
+		}
+	})
+	if found == "" {
+		found = doiRe.FindString(doc.Find("div.brief").Text())
+	}
+	return strings.TrimRight(found, ".,;)]")
 }
 
 func GetPaperMainBody(href string) (string, error) {

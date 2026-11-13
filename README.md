@@ -8,7 +8,9 @@
 
 - 按主题检索论文
 - 读取关键词和摘要
-- 把 PDF 下载到本机 (机构订购范围内)
+- 把 PDF 下载到本机 (机构订购范围内), 并按论文分文件夹
+- 导出 Zotero 可导入的 `zotero.bib`, PDF 会作为附件挂上
+- 把矢量 PDF 直接转成 `paper.html`, 文字和图片按原位置抽出, 不做 OCR
 - 读取在线阅读正文, 以及期刊影响因子
 
 离开校园网后 IP 登录会失败, 这时无法检索和下载.
@@ -31,13 +33,15 @@ Cursor 的 MCP 要直接启动 exe, 不要套一层 `cmd /c`, 否则标准输出
 }
 ```
 
-把 `command` 换成 exe 的实际路径. 可选环境变量 `CNKI_DOWNLOAD_DIR` 用来指定 PDF 保存目录. 不设置时保存到用户目录下的 `Downloads\CNKI` (资源管理器里一般显示为下载).
+把 `command` 换成 exe 的实际路径. 可选环境变量 `CNKI_DOWNLOAD_DIR` 用来指定文库根目录. 不设置时保存到用户目录下的 `Downloads\CNKI` (资源管理器里一般显示为下载).
+
+每篇论文一个文件夹: `年份\题名\`. 里面是 `paper.pdf`, `paper.html` 和 `zotero.bib`. 图片在 `assets\`. `paper.html` 只提取 PDF 里已有的文字层和图片, 扫描件没有这些层时不会做 OCR. 在 Zotero 里选择 文件 - 导入, 打开 `zotero.bib`, PDF 和 HTML 会作为附件挂上. 若 `saveDir` 以 `.pdf` 结尾, 则 PDF 写到这个路径, bib 和 html 放在同一目录.
 
 ## 工具
 
 1. `ScanPaper`: 主题检索, 返回题录和摘要页链接 `Href`.
 2. `GetPaperInfo`: 用 `Href` 读取标题, 作者, 关键词和摘要.
-3. `DownloadPaper`: 用 `Href` 下载 PDF, 同时返回关键词, 摘要和本地路径. 不要自己去请求页面上的下载地址.
+3. `DownloadPaper`: 用 `Href` 下载 PDF, 同时写出 `zotero.bib` 和 `paper.html`, 并返回关键词, 摘要和这些路径. 不要自己去请求页面上的下载地址.
 4. `GetPaperMainBody`: 用在线阅读链接提取正文.
 5. `SetGlobalCookie` / `GetGlobalCookie`: 仅供调试. 校园网下不要手动塞 Cookie.
 
@@ -48,7 +52,9 @@ CNKICrawlerMCP/
 ├── main.go              # MCP 服务器入口和工具定义
 ├── session.go           # 校园网 IP 登录和按域名保存的原始 Cookie
 ├── scanner.go           # 检索, 摘要, 关键词, 正文
-├── download.go          # PDF 下载
+├── download.go          # PDF 下载和按论文分目录
+├── zotero.go            # Zotero BibTeX
+├── pdfhtml.go           # 从 PDF 直接提取文字和图片, 写成 HTML
 ├── ulti.go              # 影响因子和 HTML 解析
 ├── types/
 │   └── types.go         # 数据结构定义

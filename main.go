@@ -17,12 +17,12 @@ const serverInstructions = `校园网 IP 自动登录的知网工具, 不需要�
 连接校园网时直接调用工具. 只有用户明确粘贴了 Cookie 才使用 SetGlobalCookie.
 1. ScanPaper 检索题录.
 2. GetPaperInfo 查看摘要和关键词.
-3. DownloadPaper 把 PDF 保存到本机, 并一并返回摘要和关键词.
+3. DownloadPaper 把 PDF 存到本机, 并在同一文件夹写出 zotero.bib 和 paper.html. paper.html 直接提取文字和图片, 不做 OCR. 在 Zotero 里选择 文件 - 导入 打开 zotero.bib.
 不要自己请求 bar.cnki.net, docdown.cnki.net 或返回结果里的 PDF 链接, 那些地址离开本服务的会话会失败.`
 
 func main() {
 	log.SetOutput(os.Stderr)
-	s := server.NewMCPServer("CNKICrawlerMcp", "1.1.0", server.WithInstructions(serverInstructions))
+	s := server.NewMCPServer("CNKICrawlerMcp", "1.2.0", server.WithInstructions(serverInstructions))
 	s.AddTool(mcp.Tool{
 		Name:        "ScanPaper",
 		Description: "在校园网下按主题检索知网. 自动 IP 登录, 不需要 Cookie. 返回标题, 作者, 来源, 发表年份, 摘要页链接 Href. 要摘要和关键词再调 GetPaperInfo, 要 PDF 再把 Href 传给 DownloadPaper",
@@ -50,12 +50,12 @@ func main() {
 	}, handleGetPaperInfo)
 	s.AddTool(mcp.Tool{
 		Name:        "DownloadPaper",
-		Description: "用 ScanPaper 或 GetPaperInfo 的论文 Href 下载 PDF 到本机. 校园网 IP 自动登录, 不需要个人账号. 成功时返回本地路径, 标题, 关键词和摘要. 不要改用浏览器或 curl 去打开 PDF 链接",
+		Description: "用 ScanPaper 或 GetPaperInfo 的论文 Href 下载 PDF. 校园网 IP 自动登录, 不需要个人账号. 每篇论文一个文件夹, 内有 paper.pdf, paper.html 和 zotero.bib. paper.html 直接提取文字和图片 (含图文位置), 不做 OCR. 成功时返回这些路径, 标题, 关键词和摘要. 不要改用浏览器或 curl 去打开 PDF 链接",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
 				"href":    map[string]string{"type": "string", "description": "ScanPaper 返回的论文摘要页链接 Href"},
-				"saveDir": map[string]string{"type": "string", "description": "可选. 保存目录, 或以 .pdf 结尾的完整路径. 默认保存到用户下载目录下的 CNKI 文件夹"},
+				"saveDir": map[string]string{"type": "string", "description": "可选. 文库根目录, 或以 .pdf 结尾的完整路径. 默认是用户下载目录下的 CNKI. 目录模式下按 年份/题名 分文件夹"},
 			},
 			Required: []string{"href"},
 		},

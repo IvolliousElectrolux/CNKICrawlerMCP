@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -30,10 +29,20 @@ type downloadResult struct {
 	Abstract    string   `json:"abstract"`
 	Year        int      `json:"year"`
 	OnlineFirst bool     `json:"onlineFirst"`
-	Institution string   `json:"institution,omitempty"`
-	File        string   `json:"file,omitempty"`
-	Bytes       int      `json:"bytes,omitempty"`
-	Format      string   `json:"format,omitempty"`
+	Institution     string   `json:"institution,omitempty"`
+	Journal         string   `json:"journal,omitempty"`
+	DOI             string   `json:"doi,omitempty"`
+	File            string   `json:"file,omitempty"`
+	Bytes           int      `json:"bytes,omitempty"`
+	Format          string   `json:"format,omitempty"`
+	Dir             string   `json:"dir,omitempty"`
+	Metadata        string   `json:"metadata,omitempty"`
+	HTML            string   `json:"html,omitempty"`
+	Images          int      `json:"images"`
+	TextChars       int      `json:"textChars"`
+	MetadataError   string   `json:"metadataError,omitempty"`
+	HTMLError       string   `json:"htmlError,omitempty"`
+	Import          string   `json:"import,omitempty"`
 }
 
 func handleDownloadPaper(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -91,12 +100,9 @@ func DownloadPaper(href, saveDir string) (downloadResult, error) {
 		return result, fmt.Errorf("该文献页面没有 PDF 下载按钮. 机构未订购时知网不会给出入口")
 	}
 
-	path, n, err := fetchPDF(info.PDF, href, saveDir, info.Title)
+	body, err := fetchPDF(info.PDF, href)
 	if err == nil {
-		result.File = path
-		result.Bytes = n
-		result.Format = "PDF"
-		return result, nil
+		return finishDownload(body, saveDir, info)
 	}
 	if errors.Is(err, ErrNotSubscribed) || errors.Is(err, ErrBlocked) {
 		return result, err
@@ -106,11 +112,8 @@ func DownloadPaper(href, saveDir string) (downloadResult, error) {
 	info, againErr := getPaperInfo(href)
 	if againErr == nil && info.PDF != "" {
 		result = resultFromInfo(info)
-		if path, n, err2 := fetchPDF(info.PDF, href, saveDir, info.Title); err2 == nil {
-			result.File = path
-			result.Bytes = n
-			result.Format = "PDF"
-			return result, nil
+		if body, err2 := fetchPDF(info.PDF, href); err2 == nil {
+			return finishDownload(body, saveDir, info)
 		} else {
 			err = err2
 		}
@@ -125,16 +128,51 @@ func DownloadPaper(href, saveDir string) (downloadResult, error) {
 			if info.PDF == "" {
 				return result, fmt.Errorf("重新登录后这篇文献仍然没有 PDF 下载按钮")
 			}
-			path, n, err = fetchPDF(info.PDF, href, saveDir, info.Title)
+			body, err = fetchPDF(info.PDF, href)
 			if err == nil {
-				result.File = path
-				result.Bytes = n
-				result.Format = "PDF"
-				return result, nil
+				return finishDownload(body, saveDir, info)
 			}
 		}
 	}
 	return result, err
+}
+
+func finishDownload(body []byte, saveDir string, info types.PaperInfo) (downloadResult, error) {
+	result := resultFromInfo(info)
+	dir, pdfPath, err := locatePaper(saveDir, info)
+	if err != nil {
+		return result, err
+	}
+	if err := os.WriteFile(pdfPath, body, 0o644); err != nil {
+		return result, err
+	}
+	result.File = pdfPath
+	result.Bytes = len(body)
+	result.Format = "PDF"
+	result.Dir = dir
+
+	exported, htmlErr := exportPDFHTML(body, dir, info.Title)
+	htmlPath := ""
+	if htmlErr != nil {
+		result.HTMLError = htmlErr.Error()
+	} else {
+		htmlPath = exported.Path
+		result.HTML = exported.Path
+		result.Images = exported.Images
+		result.TextChars = exported.TextChars
+	}
+	bibPath, bibErr := writeZoteroBib(dir, info, pdfPath, htmlPath)
+	if bibErr != nil {
+		result.MetadataError = bibErr.Error()
+	} else {
+		result.Metadata = bibPath
+		if htmlPath != "" {
+			result.Import = "在 Zotero 里选择 文件 - 导入, 打开 zotero.bib. PDF 和 HTML 会作为附件挂上."
+		} else {
+			result.Import = "在 Zotero 里选择 文件 - 导入, 打开 zotero.bib. PDF 会作为附件挂上."
+		}
+	}
+	return result, nil
 }
 
 func resultFromInfo(info types.PaperInfo) downloadResult {
@@ -154,30 +192,25 @@ func resultFromInfo(info types.PaperInfo) downloadResult {
 		Year:        info.Year,
 		OnlineFirst: info.OnlineFirst,
 		Institution: LoginInstitution(),
+		Journal:     info.Journal,
+		DOI:         info.DOI,
 	}
 }
 
-func fetchPDF(pdfURL, referer, saveDir, title string) (string, int, error) {
+func fetchPDF(pdfURL, referer string) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodGet, pdfURL, nil)
 	if err != nil {
-		return "", 0, err
+		return nil, err
 	}
 	req.Header.Set("Referer", referer)
 	resp, err := cnkiDoLimited(req, true, 150<<20)
 	if err != nil {
-		return "", 0, err
+		return nil, err
 	}
 	if resp.Status != http.StatusOK || !isPDF(resp.Body) {
-		return "", 0, explainDownloadBody(resp.Status, resp.Body)
+		return nil, explainDownloadBody(resp.Status, resp.Body)
 	}
-	path, err := resolveSavePath(saveDir, title)
-	if err != nil {
-		return "", 0, err
-	}
-	if err := os.WriteFile(path, resp.Body, 0o644); err != nil {
-		return "", 0, err
-	}
-	return path, len(resp.Body), nil
+	return resp.Body, nil
 }
 
 func isPDF(body []byte) bool {
@@ -202,37 +235,6 @@ func explainDownloadBody(status int, body []byte) error {
 	default:
 		return fmt.Errorf("下载结果不是 PDF (HTTP %d, %d 字节)", status, len(body))
 	}
-}
-
-func resolveSavePath(saveDir, title string) (string, error) {
-	target := strings.TrimSpace(saveDir)
-	if target == "" {
-		if env := strings.TrimSpace(os.Getenv("CNKI_DOWNLOAD_DIR")); env != "" {
-			target = env
-		} else {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return "", err
-			}
-			target = filepath.Join(home, "Downloads", "CNKI")
-		}
-	}
-	if strings.EqualFold(filepath.Ext(target), ".pdf") {
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return "", err
-		}
-		return absPath(target), nil
-	}
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		return "", err
-	}
-	name := safePDFName(title)
-	path := filepath.Join(target, name)
-	if _, err := os.Stat(path); err == nil {
-		stem := strings.TrimSuffix(name, ".pdf")
-		path = filepath.Join(target, stem+"-"+time.Now().Format("150405")+".pdf")
-	}
-	return absPath(path), nil
 }
 
 func absPath(path string) string {

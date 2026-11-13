@@ -85,6 +85,12 @@ type PaperInfo struct {
 	Year     int      // 发表年份, 取自详情页题录行; 0 表示未解析到
 	// 网络首发: 该论文尚无正式刊期, Year 取自网络首发时间
 	OnlineFirst bool
+	Journal     string // 期刊或会议名
+	Volume      string // 卷
+	Issue       string // 期
+	Pages       string // 页码
+	DOI         string
+	URL         string // 摘要页链接
 }
 type PaperMainBodyParams struct {
 	Invoice   string `json:"invoice"`
