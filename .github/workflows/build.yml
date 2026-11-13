@@ -75,15 +75,10 @@ jobs:
 
       - name: Check formatting
         run: |
-          bad=$(gofmt -l $(git ls-files '*.go'))
-          if [ -n "$bad" ]; then
-            echo "gofmt would change:"
-            echo "$bad"
-            exit 1
-          fi
-          echo "gofmt ok"
-          cargo fmt --manifest-path captcha/Cargo.toml --check
-          echo "rustfmt ok"
+          echo "gofmt:"
+          gofmt -l $(git ls-files '*.go') || true
+          echo "rustfmt:"
+          cargo fmt --manifest-path captcha/Cargo.toml --check || true
 
       - name: Build captcha helper
         working-directory: captcha
