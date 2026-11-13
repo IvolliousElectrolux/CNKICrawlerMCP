@@ -15,9 +15,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/ledongthuc/pdf"
 	"github.com/robert-mcdermott/jp2k"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 const htmlScale = 96.0 / 72.0
@@ -118,6 +120,10 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 		for _, run := range groupGlyphs(glyphs) {
 			text := strings.TrimSpace(run.s)
 			if text == "" {
+				continue
+			}
+			// 个别字形的坐标落在页面外很远, 多半是字体里的废点, 画出来会把行宽拉飞.
+			if run.x < ox-36 || run.x > ox+pw+36 || run.y < oy-36 || run.y > oy+ph+36 {
 				continue
 			}
 			out.TextChars += len([]rune(text))
@@ -293,6 +299,8 @@ type fontMetric struct {
 	spans     []widthSpan
 	simple    bool
 	encoding  string
+	gbk       bool
+	uni       map[int]string
 }
 
 type widthSpan struct {
@@ -321,9 +329,13 @@ func metricFor(f *pdf.Font) (m fontMetric) {
 		return fontMetric{codeBytes: 1, simple: true}
 	}
 	m.encoding = f.V.Key("Encoding").Name()
+	m.gbk = strings.Contains(m.encoding, "GBK") || strings.Contains(m.encoding, "GB-EUC") || strings.Contains(m.encoding, "GBpc")
+	m.uni = unicodeMap(f)
 	desc := f.V.Key("DescendantFonts")
 	if desc.Kind() != pdf.Array || desc.Len() == 0 {
-		return fontMetric{codeBytes: 1, simple: true, encoding: m.encoding}
+		m.codeBytes = 1
+		m.simple = true
+		return m
 	}
 	m.codeBytes = 2
 	m.dw = 1000
@@ -383,6 +395,143 @@ func (m fontMetric) stepAt(raw string, i int) int {
 	return 2
 }
 
+// decodeGlyph 优先用字体自己的 ToUnicode. 方正 GBK 字体没有这张表, 字符码就是 GBK.
+// 解析库遇到 GBK-EUC-H 会原样返回字节, 再按 UTF-8 读就成了替换符.
+func decodeGlyph(g textState, chunk string, code int) string {
+	if g.metric.gbk {
+		decoded, err := simplifiedchinese.GBK.NewDecoder().Bytes([]byte(chunk))
+		if err != nil || len(decoded) == 0 {
+			return ""
+		}
+		return string(decoded)
+	}
+	if len(g.metric.uni) > 0 && !strings.Contains(g.metric.encoding, "Identity") {
+		if s, ok := g.metric.uni[code]; ok {
+			return s
+		}
+		return ""
+	}
+	if g.enc == nil {
+		return ""
+	}
+	return g.enc.Decode(chunk)
+}
+
+func unicodeMap(f *pdf.Font) map[int]string {
+	if f == nil {
+		return nil
+	}
+	v := f.V.Key("ToUnicode")
+	if v.Kind() != pdf.Stream {
+		return nil
+	}
+	rc := v.Reader()
+	if rc == nil {
+		return nil
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	return parseToUnicode(string(data))
+}
+
+var (
+	reCMapBlock = regexp.MustCompile(`(?s)beginbfchar(.*?)endbfchar|beginbfrange(.*?)endbfrange`)
+	reCMapHex   = regexp.MustCompile(`<([0-9A-Fa-f]+)>`)
+)
+
+func parseToUnicode(s string) map[int]string {
+	out := map[int]string{}
+	for _, m := range reCMapBlock.FindAllStringSubmatch(s, -1) {
+		body := m[1]
+		isRange := false
+		if body == "" {
+			body = m[2]
+			isRange = true
+		}
+		if !isRange {
+			hs := reCMapHex.FindAllStringSubmatch(body, -1)
+			for i := 0; i+1 < len(hs); i += 2 {
+				out[hexInt(hs[i][1])] = decodeUTF16Hex(hs[i+1][1])
+			}
+			continue
+		}
+		for _, line := range strings.FieldsFunc(body, func(r rune) bool { return r == '\n' || r == '\r' }) {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "%") || strings.Contains(line, "[") {
+				continue
+			}
+			hs := reCMapHex.FindAllStringSubmatch(line, -1)
+			if len(hs) < 3 {
+				continue
+			}
+			lo, hi := hexInt(hs[0][1]), hexInt(hs[1][1])
+			if hi < lo || hi-lo > 65535 {
+				continue
+			}
+			base := decodeUTF16Hex(hs[2][1])
+			for code := lo; code <= hi; code++ {
+				out[code] = shiftLastRune(base, code-lo)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func hexInt(s string) int {
+	n := 0
+	for _, c := range s {
+		n *= 16
+		switch {
+		case c >= '0' && c <= '9':
+			n += int(c - '0')
+		case c >= 'a' && c <= 'f':
+			n += int(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			n += int(c-'A') + 10
+		}
+	}
+	return n
+}
+
+func decodeUTF16Hex(h string) string {
+	if len(h)%2 == 1 {
+		h = "0" + h
+	}
+	raw := make([]byte, len(h)/2)
+	for i := range raw {
+		raw[i] = byte(hexInt(h[i*2 : i*2+2]))
+	}
+	if len(raw) < 2 {
+		if len(raw) == 1 {
+			return string(rune(raw[0]))
+		}
+		return ""
+	}
+	u := make([]uint16, len(raw)/2)
+	for i := range u {
+		u[i] = uint16(raw[i*2])<<8 | uint16(raw[i*2+1])
+	}
+	return string(utf16.Decode(u))
+}
+
+func shiftLastRune(s string, delta int) string {
+	if delta == 0 {
+		return s
+	}
+	rs := []rune(s)
+	if len(rs) == 0 {
+		return ""
+	}
+	rs[len(rs)-1] += rune(delta)
+	return string(rs)
+}
+
 func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph, images *[]placedImg) {
 	if depth > 6 || strm.IsNull() {
 		return
@@ -400,13 +549,13 @@ func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph,
 			n := g.metric.stepAt(raw, i)
 			chunk := raw[i : i+n]
 			i += n
-			text := g.enc.Decode(chunk)
-			if text == "" {
-				continue
-			}
 			code := int(chunk[0])
 			if n == 2 {
 				code = int(chunk[0])<<8 | int(chunk[1])
+			}
+			text := decodeGlyph(g, chunk, code)
+			if text == "" {
+				continue
 			}
 			w0 := g.metric.width(code)
 			if g.metric.simple {
@@ -432,9 +581,10 @@ func walkStream(strm, resources pdf.Value, ctm mat3, depth int, glyphs *[]glyph,
 				adv = size * 0.5
 			}
 			for _, ch := range text {
-				if ch >= 32 {
-					*glyphs = append(*glyphs, glyph{x: x, y: y, size: size, w: adv, s: string(ch)})
+				if ch < 32 || ch == '\uFFFD' || (ch >= 0xE000 && ch <= 0xF8FF) {
+					continue
 				}
+				*glyphs = append(*glyphs, glyph{x: x, y: y, size: size, w: adv, s: string(ch)})
 			}
 			tx := w0/1000*g.tfs + g.tc
 			if strings.ContainsRune(text, ' ') {

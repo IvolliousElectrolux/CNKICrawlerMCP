@@ -8,6 +8,7 @@ require (
 	github.com/mark3labs/mcp-go v0.46.0
 	github.com/refraction-networking/utls v1.8.2
 	github.com/robert-mcdermott/jp2k v0.0.0-20261024062714-4dc4f96dd98d
+	golang.org/x/text v0.31.0
 )
 
 require (
@@ -32,7 +33,6 @@ require (
 	golang.org/x/crypto v0.44.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.38.0 // indirect
-	golang.org/x/text v0.31.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 )
