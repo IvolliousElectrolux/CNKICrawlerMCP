@@ -282,11 +282,12 @@ func (t *cookieTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 var (
-	cnkiJar = newRawJar()
+	cnkiJar    = newRawJar()
+	cnkiBase   = newChromeTransport()
 	cnkiClient = &http.Client{
 		Timeout: 120 * time.Second,
 		Transport: &cookieTransport{
-			base: http.DefaultTransport,
+			base: cnkiBase,
 			jar:  cnkiJar,
 		},
 	}
@@ -296,7 +297,7 @@ var (
 			return http.ErrUseLastResponse
 		},
 		Transport: &cookieTransport{
-			base: http.DefaultTransport,
+			base: cnkiBase,
 			jar:  cnkiJar,
 		},
 	}
@@ -322,6 +323,17 @@ func cnkiDoLimited(req *http.Request, follow bool, limit int64) (*cnkiResponse, 
 	}
 	if req.Header.Get("Referer") == "" {
 		req.Header.Set("Referer", knsHome)
+	}
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+	}
+	if req.Header.Get("Accept-Language") == "" {
+		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	}
+	if req.Header.Get("Sec-Ch-Ua") == "" {
+		req.Header.Set("Sec-Ch-Ua", `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`)
+		req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+		req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
 	}
 	cnkiThrottle.waitTurn()
 	client := cnkiClient

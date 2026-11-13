@@ -6,6 +6,7 @@ require (
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/ledongthuc/pdf v0.0.0-20261020125853-5e46805f718e
 	github.com/mark3labs/mcp-go v0.46.0
+	github.com/refraction-networking/utls v1.8.2
 	github.com/robert-mcdermott/jp2k v0.0.0-20261024062714-4dc4f96dd98d
 )
 
