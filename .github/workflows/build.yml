@@ -26,7 +26,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: captcha/model/*.onnx
-          key: ddddocr-official-old-det-v1
+          key: ddddocr-common-33b5cd35-det-6faa8ea8
 
       - name: Download ddddocr models
         run: |
@@ -34,7 +34,7 @@ jobs:
           import hashlib, io, json, pathlib, urllib.request, zipfile
           root = pathlib.Path("captcha/model")
           root.mkdir(parents=True, exist_ok=True)
-          old_sha = "b8f2ad9cbc1f2e3922a6cb9459e30824e7e2467f3fb4fd61420640e34ea0bf68"
+          ocr_sha = "33b5cd351ee94e73a6bf8fa18c415ed8b819b3ffd342e267c30d8ad8334e34e8"
           det_sha = "6faa8ea85a8c1a634e5050c4a138fca10f30194e0d7abbe9ade1fcd423af6ed6"
 
           def fetch(url):
@@ -55,8 +55,8 @@ jobs:
               (root / name).write_bytes(data)
               print("wrote", name, len(data))
 
-          if fresh("common_old.onnx", old_sha):
-              save("common_old.onnx", fetch("https://github.com/sml2h3/ddddocr/raw/master/ddddocr/common_old.onnx"), old_sha)
+          if fresh("common.onnx", ocr_sha):
+              save("common.onnx", fetch("https://github.com/86maid/ddddocr/raw/90d0d9bf95d92c3d2109c8b911261b0c01c9fd71/model/common.onnx"), ocr_sha)
           if fresh("common_det.onnx", det_sha):
               meta = json.loads(fetch("https://pypi.org/pypi/ddddocr/1.4.11/json"))
               wheel_url = next(u["url"] for u in meta["urls"] if u["packagetype"] == "bdist_wheel")
@@ -94,7 +94,7 @@ jobs:
           # 1x1 png. 模型能加载并回答即可, 这张图上不应该检出字.
           image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
           job = json.dumps({"image": image, "words": ["测"]}) + "\n"
-          proc = subprocess.run(["timeout", "360", bin_path], input=job.encode(), capture_output=True)
+          proc = subprocess.run(["timeout", "600", bin_path], input=job.encode(), capture_output=True)
           sys.stderr.write(proc.stderr.decode("utf-8", "replace"))
           text = proc.stdout.decode("utf-8", "replace")
           print(text)

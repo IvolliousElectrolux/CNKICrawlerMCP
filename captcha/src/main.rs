@@ -27,10 +27,10 @@ struct Hit {
 fn main() -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
-    let charset: ddddocr::Charset = include_str!("../model/common_old.json")
+    let charset: ddddocr::Charset = include_str!("../model/common.json")
         .parse()
         .context("parse charset")?;
-    let ocr = Ddddocr::new(include_bytes!("../model/common_old.onnx"), charset)
+    let ocr = Ddddocr::new(include_bytes!("../model/common.onnx"), charset)
         .context("load ocr model")?;
     let det =
         Ddddocr::new_model(include_bytes!("../model/common_det.onnx")).context("load det model")?;
