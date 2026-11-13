@@ -3,7 +3,7 @@ use std::io::{BufRead, Write};
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use ddddocr::{BBox, CharacterProbability, Ddddocr};
-use image::DynamicImage;
+use image::{DynamicImage, GenericImageView};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
