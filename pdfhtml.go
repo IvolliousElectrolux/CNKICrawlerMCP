@@ -83,6 +83,9 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			err = fmt.Errorf("解析 PDF 时中断: %v", r)
 		}
 	}()
+	// 知网下载的 PDF 在 %%EOF 之后还会附一段 FileProperty XML.
+	// 解析库只检查文件末尾, 这段尾巴会让它认为文件不是 PDF.
+	pdfBytes = trimCNKIPDF(pdfBytes)
 	r, err := pdf.NewReader(bytes.NewReader(pdfBytes), int64(len(pdfBytes)))
 	if err != nil {
 		return out, err
@@ -190,6 +193,25 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 type htmlBox struct {
 	top  float64
 	html string
+}
+
+// trimCNKIPDF 去掉 %%EOF 之后知网附加的元数据, 不改落盘的 PDF.
+func trimCNKIPDF(data []byte) []byte {
+	i := bytes.LastIndex(data, []byte("%%EOF"))
+	if i < 0 {
+		return data
+	}
+	end := i + len("%%EOF")
+	if end < len(data) && (data[end] == '\n' || data[end] == '\r') {
+		end++
+		if end < len(data) && data[end-1] == '\r' && data[end] == '\n' {
+			end++
+		}
+	}
+	if end >= len(data) {
+		return data
+	}
+	return data[:end]
 }
 
 func pageBox(p pdf.Page) (w, h, ox, oy float64) {
