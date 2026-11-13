@@ -688,8 +688,9 @@ func groupGlyphs(gs []glyph) []glyph {
 			}
 			minX := r.glyphs[0].x
 			last := r.glyphs[len(r.glyphs)-1]
-			maxX := last.x + last.w
-			if n.x < minX-r.size*0.5 || n.x > maxX+r.size*0.9 {
+			maxX := last.x + math.Max(last.w, last.size*0.8)
+			// 引用经常落在两个词之间的空隙里, 空隙比一个字宽要大, 仍算前一个词的上标.
+			if n.x < minX-r.size*0.35 || n.x > maxX+r.size*2.6 {
 				continue
 			}
 			score := math.Abs(dy)
@@ -702,7 +703,17 @@ func groupGlyphs(gs []glyph) []glyph {
 			}
 		}
 		if best < 0 {
+			// 对不上词时也贴到最近的正文基线, 避免上标的 y 把它排进上一行末尾.
 			n.line = n.y
+			bestDy := math.MaxFloat64
+			for _, r := range runs {
+				dy := n.y - r.y
+				if dy < -r.size*0.25 || dy > r.size*0.8 || dy >= bestDy {
+					continue
+				}
+				bestDy = dy
+				n.line = r.y
+			}
 			looseNotes = append(looseNotes, n)
 			continue
 		}
