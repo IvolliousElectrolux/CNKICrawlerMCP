@@ -690,12 +690,15 @@ func groupGlyphs(gs []glyph) []glyph {
 			last := r.glyphs[len(r.glyphs)-1]
 			maxX := last.x + math.Max(last.w, last.size*0.8)
 			// 引用经常落在两个词之间的空隙里, 空隙比一个字宽要大, 仍算前一个词的上标.
-			if n.x < minX-r.size*0.35 || n.x > maxX+r.size*2.6 {
+			if n.x < minX-r.size*2.2 || n.x > maxX+r.size*2.6 {
 				continue
 			}
 			score := math.Abs(dy)
 			if n.x > maxX {
 				score += (n.x - maxX) * 0.02
+			}
+			if n.x < minX {
+				score += (minX - n.x) * 0.02
 			}
 			if score < bestScore {
 				bestScore = score
