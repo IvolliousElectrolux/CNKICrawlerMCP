@@ -55,6 +55,7 @@ func (m mat3) apply(x, y float64) (float64, float64) {
 type glyph struct {
 	x, y, size, w float64
 	s             string
+	line          float64
 }
 
 type placedImg struct {
@@ -126,7 +127,11 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			}
 			left := (run.x - ox) * htmlScale
 			top := (oy + ph - run.y - size*0.8) * htmlScale
-			boxes = append(boxes, htmlBox{top, fmt.Sprintf(
+			line := run.line
+			if line == 0 {
+				line = run.y
+			}
+			boxes = append(boxes, htmlBox{line, fmt.Sprintf(
 				`<span style="left:%.1fpx;top:%.1fpx;font-size:%.1fpx">%s</span>`,
 				left, top, size*htmlScale, html.EscapeString(run.s),
 			)})
@@ -153,12 +158,12 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			}
 			out.Images++
 			alt := fmt.Sprintf("第 %d 页图片", i)
-			boxes = append(boxes, htmlBox{top, fmt.Sprintf(
+			boxes = append(boxes, htmlBox{maxY, fmt.Sprintf(
 				`<img alt="%s" src="assets/%s" style="left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx">`,
 				html.EscapeString(alt), name, left, top, width, height,
 			)})
 		}
-		sort.SliceStable(boxes, func(a, b int) bool { return boxes[a].top < boxes[b].top })
+		sort.SliceStable(boxes, func(a, b int) bool { return boxes[a].line > boxes[b].line })
 		fmt.Fprintf(&body, `<div class="page" data-page="%d" style="width:%.1fpx;height:%.1fpx">`+"\n", i, pw*htmlScale, ph*htmlScale)
 		for _, box := range boxes {
 			body.WriteString(box.html)
@@ -191,7 +196,7 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 }
 
 type htmlBox struct {
-	top  float64
+	line float64
 	html string
 }
 
@@ -621,41 +626,183 @@ func groupGlyphs(gs []glyph) []glyph {
 	}
 	gs = kept
 	sort.SliceStable(gs, func(i, j int) bool { return gs[i].y > gs[j].y })
+	// 先按较宽的基线把上标和正文圈进同一带, 再把明显更小的上标拆出去.
+	// 知网的 [1,4,7] 比正文高大约 3pt, 直接按横坐标排会插进 "通过" 这种词中间.
+	var body, notes []glyph
+	for _, line := range clusterByY(gs, 0.55) {
+		bs := upperQuartileSize(line)
+		for _, g := range line {
+			if bs > 2 && g.size < bs*0.78 && g.size < bs-1.2 {
+				notes = append(notes, g)
+				continue
+			}
+			body = append(body, g)
+		}
+	}
+	sort.SliceStable(body, func(i, j int) bool { return body[i].y > body[j].y })
+	type run struct {
+		glyphs   []glyph
+		y, size  float64
+	}
+	var runs []run
+	for _, line := range clusterByY(body, 0.32) {
+		baseY := line[0].y
+		sort.SliceStable(line, func(i, j int) bool { return line[i].x < line[j].x })
+		var cur []glyph
+		flush := func() {
+			if len(cur) == 0 {
+				return
+			}
+			runs = append(runs, run{glyphs: cur, y: baseY, size: cur[0].size})
+			cur = nil
+		}
+		for _, g := range line {
+			if len(cur) == 0 {
+				cur = []glyph{g}
+				continue
+			}
+			last := cur[len(cur)-1]
+			pitch := g.x - last.x
+			limit := math.Max(last.size, g.size) * 1.35
+			if limit < 4 {
+				limit = 4
+			}
+			if pitch >= -0.25*last.size && pitch <= limit {
+				cur = append(cur, g)
+				continue
+			}
+			flush()
+			cur = []glyph{g}
+		}
+		flush()
+	}
+	attached := make([][]glyph, len(runs))
+	var looseNotes []glyph
+	for _, n := range notes {
+		best := -1
+		bestScore := math.MaxFloat64
+		for i, r := range runs {
+			dy := n.y - r.y
+			if dy < -r.size*0.25 || dy > r.size*0.7 {
+				continue
+			}
+			minX := r.glyphs[0].x
+			last := r.glyphs[len(r.glyphs)-1]
+			maxX := last.x + last.w
+			if n.x < minX-r.size*0.5 || n.x > maxX+r.size*0.9 {
+				continue
+			}
+			score := math.Abs(dy)
+			if n.x > maxX {
+				score += (n.x - maxX) * 0.02
+			}
+			if score < bestScore {
+				bestScore = score
+				best = i
+			}
+		}
+		if best < 0 {
+			n.line = n.y
+			looseNotes = append(looseNotes, n)
+			continue
+		}
+		attached[best] = append(attached[best], n)
+	}
+	var out []glyph
+	for i, r := range runs {
+		ns := attached[i]
+		sort.SliceStable(ns, func(a, b int) bool { return ns[a].x < ns[b].x })
+		out = append(out, spliceRun(r.glyphs, ns, r.y)...)
+	}
+	out = append(out, looseNotes...)
+	return out
+}
+
+func clusterByY(gs []glyph, factor float64) [][]glyph {
 	var lines [][]glyph
 	for _, g := range gs {
 		if len(lines) == 0 {
 			lines = append(lines, []glyph{g})
 			continue
 		}
-		base := lines[len(lines)-1][0]
-		if math.Abs(base.y-g.y) <= math.Max(base.size, g.size)*0.45 {
-			lines[len(lines)-1] = append(lines[len(lines)-1], g)
+		line := lines[len(lines)-1]
+		base := line[0]
+		if math.Abs(base.y-g.y) <= math.Max(base.size, g.size)*factor {
+			lines[len(lines)-1] = append(line, g)
 			continue
 		}
 		lines = append(lines, []glyph{g})
 	}
-	var runs []glyph
-	for _, line := range lines {
-		sort.SliceStable(line, func(i, j int) bool { return line[i].x < line[j].x })
-		cur := line[0]
-		for _, g := range line[1:] {
-			limit := math.Max(cur.size, g.size) * 1.25
-			if limit < 4 {
-				limit = 4
-			}
-			if g.x >= cur.x-1 && g.x-cur.x < limit {
-				cur.s += g.s
-				if g.x+g.w > cur.x+cur.w {
-					cur.w = g.x + g.w - cur.x
-				}
-				continue
-			}
-			runs = append(runs, cur)
-			cur = g
-		}
-		runs = append(runs, cur)
+	return lines
+}
+
+func upperQuartileSize(line []glyph) float64 {
+	if len(line) == 0 {
+		return 0
 	}
-	return runs
+	ss := make([]float64, len(line))
+	for i, g := range line {
+		ss[i] = g.size
+	}
+	sort.Float64s(ss)
+	return ss[len(ss)*3/4]
+}
+
+// spliceRun 把上标插到它覆盖的那个字后面, 正文仍按从左到右连成词.
+func spliceRun(body, notes []glyph, baseY float64) []glyph {
+	var out []glyph
+	ni := 0
+	var cur glyph
+	has := false
+	flush := func() {
+		if !has {
+			return
+		}
+		out = append(out, cur)
+		has = false
+	}
+	for _, g := range body {
+		g.line = baseY
+		for ni < len(notes) && notes[ni].x+notes[ni].size*0.25 < g.x {
+			flush()
+			n := notes[ni]
+			n.line = baseY
+			out = appendNote(out, n)
+			ni++
+		}
+		if !has {
+			cur = g
+			has = true
+			continue
+		}
+		cur.s += g.s
+		if g.x+g.w > cur.x+cur.w {
+			cur.w = g.x + g.w - cur.x
+		}
+	}
+	flush()
+	for ; ni < len(notes); ni++ {
+		n := notes[ni]
+		n.line = baseY
+		out = appendNote(out, n)
+	}
+	return out
+}
+
+func appendNote(out []glyph, n glyph) []glyph {
+	if len(out) == 0 {
+		return append(out, n)
+	}
+	prev := &out[len(out)-1]
+	pitch := n.x - prev.x
+	if math.Abs(prev.size-n.size) < 0.5 && pitch >= -0.3*n.size && pitch <= math.Max(prev.size, n.size)*1.6 {
+		prev.s += n.s
+		if n.x+n.w > prev.x+prev.w {
+			prev.w = n.x + n.w - prev.x
+		}
+		return out
+	}
+	return append(out, n)
 }
 
 func indexRawImages(pdfBytes []byte) []rawImage {
