@@ -123,7 +123,7 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 		}
 		boxes := make([]htmlBox, 0, len(glyphs)+len(images))
 		seq := 0.0
-		for _, run := range orderPageGlyphs(glyphs) {
+		for _, run := range orderPageGlyphs(glyphs, ox, oy, pw, ph) {
 			text := strings.TrimSpace(run.s)
 			if text == "" {
 				continue
@@ -813,7 +813,15 @@ func safeEncoder(f *pdf.Font) (enc pdf.TextEncoding) {
 }
 
 // orderPageGlyphs 按阅读顺序排字. 这些期刊正文多是双栏, 只按纵坐标排会把左右栏拆进同一行.
-func orderPageGlyphs(gs []glyph) []glyph {
+func orderPageGlyphs(gs []glyph, ox, oy, pw, ph float64) []glyph {
+	inside := gs[:0:0]
+	for _, g := range gs {
+		if g.x < ox-8 || g.x > ox+pw+8 || g.y < oy-8 || g.y > oy+ph+8 {
+			continue
+		}
+		inside = append(inside, g)
+	}
+	gs = inside
 	if len(gs) < 12 {
 		return groupGlyphs(gs)
 	}
@@ -881,16 +889,15 @@ func pageGutter(lines [][]glyph) (float64, bool) {
 		for i := 1; i < len(sorted); i++ {
 			prev := sorted[i-1]
 			gap := sorted[i].x - (prev.x + math.Max(prev.w, prev.size*0.6))
-			if gap > best {
-				best = gap
-				mid = (prev.x + math.Max(prev.w, 0) + sorted[i].x) / 2
+			at := (prev.x + math.Max(prev.w, 0) + sorted[i].x) / 2
+			rel := (at - minX) / width
+			if rel < 0.34 || rel > 0.66 || gap <= best {
+				continue
 			}
+			best = gap
+			mid = at
 		}
 		if best < 28 {
-			continue
-		}
-		rel := (mid - minX) / width
-		if rel < 0.34 || rel > 0.66 {
 			continue
 		}
 		left, right := 0, 0
