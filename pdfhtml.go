@@ -122,7 +122,8 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			walkStream(contents, page.Resources(), matIdent(), 0, &glyphs, &images, book)
 		}
 		boxes := make([]htmlBox, 0, len(glyphs)+len(images))
-		for _, run := range groupGlyphs(glyphs) {
+		seq := 0.0
+		for _, run := range orderPageGlyphs(glyphs) {
 			text := strings.TrimSpace(run.s)
 			if text == "" {
 				continue
@@ -138,10 +139,6 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			}
 			left := (run.x - ox) * htmlScale
 			top := (oy + ph - run.y - size*0.8) * htmlScale
-			line := run.line
-			if line == 0 {
-				line = run.y
-			}
 			// 浏览器字体比知网里的 Times 宽, 整行会冲出页边. 按 PDF 里的字宽把这一段压回去.
 			fs := size * htmlScale
 			width := run.w * htmlScale
@@ -153,10 +150,11 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			if run.face != "" {
 				faceStyle = fmt.Sprintf(` style="font-family:'%s',SimSun,serif"`, run.face)
 			}
-			boxes = append(boxes, htmlBox{line, fmt.Sprintf(
+			boxes = append(boxes, htmlBox{seq, top, fmt.Sprintf(
 				`<svg class="run" style="left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx" viewBox="0 0 %.2f %.2f"><text%s xml:space="preserve" x="0" y="%.2f" font-size="%.2f" textLength="%.2f" lengthAdjust="spacingAndGlyphs">%s</text></svg>`,
 				left, top, width, height, width, height, faceStyle, fs*0.8, fs, width, html.EscapeString(run.s),
 			)})
+			seq++
 		}
 		for k, im := range images {
 			minX, minY, maxX, maxY := unitBox(im.ctm)
@@ -184,12 +182,12 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 			}
 			out.Images++
 			alt := fmt.Sprintf("第 %d 页图片", i)
-			boxes = append(boxes, htmlBox{maxY, fmt.Sprintf(
+			boxes = append(boxes, htmlBox{imageOrder(top, boxes), top, fmt.Sprintf(
 				`<img alt="%s" src="assets/%s" style="left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx;%s">`,
 				html.EscapeString(alt), name, left, top, width, height, imageTurn(im.ctm),
 			)})
 		}
-		sort.SliceStable(boxes, func(a, b int) bool { return boxes[a].line > boxes[b].line })
+		sort.SliceStable(boxes, func(a, b int) bool { return boxes[a].order < boxes[b].order })
 		fmt.Fprintf(&body, `<div class="page" data-page="%d" style="width:%.1fpx;height:%.1fpx">`+"\n", i, pw*htmlScale, ph*htmlScale)
 		for _, box := range boxes {
 			body.WriteString(box.html)
@@ -224,8 +222,28 @@ func exportPDFHTML(pdfBytes []byte, dir, title string) (out htmlExport, err erro
 }
 
 type htmlBox struct {
-	line float64
-	html string
+	order float64
+	top   float64
+	html  string
+}
+
+// imageOrder 把图片插到同一高度那一行文字旁边, 不打乱栏的阅读顺序.
+func imageOrder(top float64, boxes []htmlBox) float64 {
+	best := 0.0
+	bestD := math.MaxFloat64
+	found := false
+	for _, b := range boxes {
+		d := math.Abs(b.top - top)
+		if d < bestD {
+			bestD = d
+			best = b.order + 0.5
+			found = true
+		}
+	}
+	if !found {
+		return 0
+	}
+	return best
 }
 
 // trimCNKIPDF 去掉 %%EOF 之后知网附加的元数据, 不改落盘的 PDF.
@@ -792,6 +810,146 @@ func safeEncoder(f *pdf.Font) (enc pdf.TextEncoding) {
 		return nil
 	}
 	return f.Encoder()
+}
+
+// orderPageGlyphs 按阅读顺序排字. 这些期刊正文多是双栏, 只按纵坐标排会把左右栏拆进同一行.
+func orderPageGlyphs(gs []glyph) []glyph {
+	if len(gs) < 12 {
+		return groupGlyphs(gs)
+	}
+	sorted := append([]glyph(nil), gs...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].y > sorted[j].y })
+	lines := clusterByY(sorted, 0.5)
+	gutter, ok := pageGutter(lines)
+	if !ok {
+		return groupGlyphs(gs)
+	}
+	var out, pending []glyph
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		var left, right []glyph
+		for _, g := range pending {
+			if g.x+g.w*0.5 < gutter {
+				left = append(left, g)
+			} else {
+				right = append(right, g)
+			}
+		}
+		out = append(out, groupGlyphs(left)...)
+		out = append(out, groupGlyphs(right)...)
+		pending = nil
+	}
+	for _, line := range lines {
+		if crossesGutter(line, gutter) {
+			flush()
+			out = append(out, groupGlyphs(line)...)
+			continue
+		}
+		pending = append(pending, line...)
+	}
+	flush()
+	return out
+}
+
+// pageGutter 找出反复出现在版心中间的栏距. 单位是 PDF 的点.
+func pageGutter(lines [][]glyph) (float64, bool) {
+	minX, maxX := math.MaxFloat64, -math.MaxFloat64
+	for _, line := range lines {
+		for _, g := range line {
+			if g.x < minX {
+				minX = g.x
+			}
+			if right := g.x + g.w; right > maxX {
+				maxX = right
+			}
+		}
+	}
+	width := maxX - minX
+	if width < 200 {
+		return 0, false
+	}
+	var mids []float64
+	for _, line := range lines {
+		if len(line) < 2 {
+			continue
+		}
+		sorted := append([]glyph(nil), line...)
+		sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].x < sorted[j].x })
+		best, mid := 0.0, 0.0
+		for i := 1; i < len(sorted); i++ {
+			prev := sorted[i-1]
+			gap := sorted[i].x - (prev.x + math.Max(prev.w, prev.size*0.6))
+			if gap > best {
+				best = gap
+				mid = (prev.x + math.Max(prev.w, 0) + sorted[i].x) / 2
+			}
+		}
+		if best < 28 {
+			continue
+		}
+		rel := (mid - minX) / width
+		if rel < 0.34 || rel > 0.66 {
+			continue
+		}
+		left, right := 0, 0
+		for _, g := range sorted {
+			if g.x+g.w*0.5 < mid {
+				left += len([]rune(g.s))
+			} else {
+				right += len([]rune(g.s))
+			}
+		}
+		if left < 4 || right < 4 {
+			continue
+		}
+		mids = append(mids, mid)
+	}
+	if len(mids) < 5 {
+		return 0, false
+	}
+	sort.Float64s(mids)
+	med := mids[len(mids)/2]
+	near, sum := 0, 0.0
+	for _, m := range mids {
+		if math.Abs(m-med) < 18 {
+			near++
+			sum += m
+		}
+	}
+	if near < 5 {
+		return 0, false
+	}
+	return sum / float64(near), true
+}
+
+// crossesGutter 这一行的字连续穿过栏距, 是通栏标题或摘要, 不能拆开.
+func crossesGutter(line []glyph, gutter float64) bool {
+	if len(line) < 2 {
+		return false
+	}
+	sorted := append([]glyph(nil), line...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].x < sorted[j].x })
+	left, right := false, false
+	gap := math.MaxFloat64
+	for i, g := range sorted {
+		if g.x+g.w*0.5 < gutter-1 {
+			left = true
+		} else if g.x+g.w*0.5 > gutter+1 {
+			right = true
+		}
+		if i == 0 {
+			continue
+		}
+		prev := sorted[i-1]
+		if prev.x < gutter && g.x >= gutter {
+			if ggap := g.x - (prev.x + prev.w); ggap < gap {
+				gap = ggap
+			}
+		}
+	}
+	return left && right && gap < 16
 }
 
 func groupGlyphs(gs []glyph) []glyph {
