@@ -12,6 +12,7 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -829,6 +830,7 @@ func orderPageGlyphs(gs []glyph, ox, oy, pw, ph float64) []glyph {
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].y > sorted[j].y })
 	lines := clusterByY(sorted, 0.5)
 	gutter, ok := pageGutter(lines)
+	log.Printf("双栏: 行 %d, 认出 %v, 位置 %.1f", len(lines), ok, gutter)
 	if !ok {
 		return groupGlyphs(gs)
 	}
@@ -879,6 +881,7 @@ func pageGutter(lines [][]glyph) (float64, bool) {
 		return 0, false
 	}
 	var mids []float64
+	var widest float64
 	for _, line := range lines {
 		if len(line) < 2 {
 			continue
@@ -897,6 +900,9 @@ func pageGutter(lines [][]glyph) (float64, bool) {
 			best = gap
 			mid = at
 		}
+		if best > widest {
+			widest = best
+		}
 		if best < 28 {
 			continue
 		}
@@ -914,6 +920,7 @@ func pageGutter(lines [][]glyph) (float64, bool) {
 		mids = append(mids, mid)
 	}
 	if len(mids) < 5 {
+		log.Printf("双栏未凑够: 候选 %d, 最大缝 %.1f, 版心宽 %.1f", len(mids), widest, width)
 		return 0, false
 	}
 	sort.Float64s(mids)
