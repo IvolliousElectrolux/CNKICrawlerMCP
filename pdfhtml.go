@@ -827,7 +827,8 @@ func orderPageGlyphs(gs []glyph, ox, oy, pw, ph float64) []glyph {
 	}
 	sorted := append([]glyph(nil), gs...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].y > sorted[j].y })
-	lines := clusterByY(sorted, 0.5)
+	// 分式先并回它所在的那一行, 再认栏. 否则分子分母会掉进两行正文之间, 被当成另一栏.
+	lines := absorbFormulaLines(clusterByY(sorted, 0.5))
 	gutter, ok := pageGutter(lines)
 	if !ok {
 		return groupGlyphs(gs)
@@ -1004,11 +1005,11 @@ func groupGlyphs(gs []glyph) []glyph {
 	}
 	sort.SliceStable(body, func(i, j int) bool { return body[i].y > body[j].y })
 	type run struct {
-		glyphs   []glyph
-		y, size  float64
+		glyphs  []glyph
+		y, size float64
 	}
 	var runs []run
-	for _, line := range clusterByY(body, 0.32) {
+	for _, line := range absorbFormulaLines(clusterByY(body, 0.32)) {
 		baseY := line[0].y
 		sort.SliceStable(line, func(i, j int) bool { return line[i].x < line[j].x })
 		var cur []glyph
@@ -1031,6 +1032,10 @@ func groupGlyphs(gs []glyph) []glyph {
 				limit = 4
 			}
 			if g.face == last.face && pitch >= -0.25*last.size && pitch <= limit {
+				// 英文单词之间没有空格字形, 只是原点隔得更开. 间距明显大于字宽时补一个空格.
+				if gap := g.x - (last.x + last.w); gap > math.Max(last.size, g.size)*0.18 && wordEdge(last.s, true) && wordEdge(g.s, false) {
+					cur[len(cur)-1].s += " "
+				}
 				cur = append(cur, g)
 				continue
 			}
@@ -1093,6 +1098,160 @@ func groupGlyphs(gs []glyph) []glyph {
 	}
 	out = append(out, looseNotes...)
 	return out
+}
+
+// absorbFormulaLines 把夹在两行正文之间的分子, 分母并回最近的那一行.
+// 知网把分式拆成上下两层, 读出来会插进 "通过" 这种正好换行的词.
+func absorbFormulaLines(lines [][]glyph) [][]glyph {
+	if len(lines) < 2 {
+		return lines
+	}
+	text := make([]bool, len(lines))
+	yOf := make([]float64, len(lines))
+	sz := make([]float64, len(lines))
+	for i, line := range lines {
+		yOf[i], sz[i] = lineBaseline(line)
+		text[i] = lineIsText(line)
+	}
+	target := make([]int, len(lines))
+	for i := range target {
+		target[i] = -1
+	}
+	for i, line := range lines {
+		if text[i] || !formulaFragment(line) {
+			continue
+		}
+		best, bestD := -1, math.MaxFloat64
+		for j := range lines {
+			if !text[j] {
+				continue
+			}
+			d := math.Abs(yOf[i] - yOf[j])
+			limit := math.Max(sz[i], sz[j]) * 0.95
+			if d >= limit || d >= bestD || !xOverlaps(line, lines[j], sz[j]) {
+				continue
+			}
+			best, bestD = j, d
+		}
+		target[i] = best
+	}
+	extra := map[int][]glyph{}
+	for i, line := range lines {
+		if target[i] >= 0 {
+			extra[target[i]] = append(extra[target[i]], line...)
+		}
+	}
+	out := make([][]glyph, 0, len(lines))
+	for i, line := range lines {
+		if target[i] >= 0 {
+			continue
+		}
+		if add := extra[i]; len(add) > 0 {
+			merged := make([]glyph, 0, len(line)+len(add))
+			merged = append(merged, line...)
+			merged = append(merged, add...)
+			line = merged
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+func lineBaseline(line []glyph) (y, size float64) {
+	if len(line) == 0 {
+		return 0, 10
+	}
+	for _, g := range line {
+		y += g.y
+		size += g.size
+	}
+	n := float64(len(line))
+	return y / n, size / n
+}
+
+func lineIsText(line []glyph) bool {
+	han, n := 0, 0
+	for _, g := range line {
+		for _, r := range g.s {
+			if r == ' ' {
+				continue
+			}
+			n++
+			if r >= 0x4E00 && r <= 0x9FFF {
+				han++
+			}
+		}
+	}
+	return han >= 1 || n >= 8
+}
+
+func formulaFragment(line []glyph) bool {
+	n := 0
+	mathish := false
+	for _, g := range line {
+		for _, r := range g.s {
+			if r == ' ' {
+				continue
+			}
+			if r >= 0x4E00 && r <= 0x9FFF {
+				return false
+			}
+			n++
+			if isMathSignal(r) {
+				mathish = true
+			}
+		}
+	}
+	if n == 0 || n > 6 {
+		return false
+	}
+	// 单独一个字母多半是分母, 像 t, a, v.
+	return n == 1 || mathish
+}
+
+func isMathSignal(r rune) bool {
+	if (r >= '0' && r <= '9') || (r >= '０' && r <= '９') || (r >= 0x0391 && r <= 0x03C9) {
+		return true
+	}
+	switch r {
+	case '+', '-', '=', '/', '*', '^', '(', ')', '×', '·', '−', '－', 'Δ', '∑', '∫':
+		return true
+	}
+	return false
+}
+
+func xOverlaps(a, b []glyph, pad float64) bool {
+	if pad < 4 {
+		pad = 4
+	}
+	a0, a1 := xSpan(a)
+	b0, b1 := xSpan(b)
+	return a0 <= b1+pad && b0 <= a1+pad
+}
+
+func xSpan(line []glyph) (float64, float64) {
+	lo, hi := math.MaxFloat64, -math.MaxFloat64
+	for _, g := range line {
+		if g.x < lo {
+			lo = g.x
+		}
+		if right := g.x + math.Max(g.w, g.size*0.5); right > hi {
+			hi = right
+		}
+	}
+	return lo, hi
+}
+
+func wordEdge(s string, last bool) bool {
+	rs := []rune(s)
+	if len(rs) == 0 {
+		return false
+	}
+	r := rs[0]
+	if last {
+		r = rs[len(rs)-1]
+	}
+	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
 }
 
 func clusterByY(gs []glyph, factor float64) [][]glyph {
