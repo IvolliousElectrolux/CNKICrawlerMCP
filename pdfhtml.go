@@ -1011,7 +1011,7 @@ func groupGlyphs(gs []glyph) []glyph {
 	var runs []run
 	for _, line := range absorbFormulaLines(clusterByY(body, 0.32)) {
 		baseY := line[0].y
-		sort.SliceStable(line, func(i, j int) bool { return line[i].x < line[j].x })
+		line = readingOrder(line)
 		var cur []glyph
 		flush := func() {
 			if len(cur) == 0 {
@@ -1205,8 +1205,125 @@ func formulaFragment(line []glyph) bool {
 	if n == 0 || n > 6 {
 		return false
 	}
-	// 单独一个字母多半是分母, 像 t, a, v.
-	return n == 1 || mathish
+	// 单独一个字母, 或 Rx, RV 这种两三个字母的符号. 三个以上的全小写是英文单词.
+	if n == 1 || mathish {
+		return true
+	}
+	if n > 3 {
+		return false
+	}
+	for _, g := range line {
+		for _, r := range g.s {
+			if r >= 'A' && r <= 'Z' {
+				return true
+			}
+			if r >= 'a' && r <= 'z' && n <= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// readingOrder 把上下重叠的字读成一列: 分子在前, 分母在后, 上标跟在底字后面.
+// 同一基线上的字仍从左到右.
+func readingOrder(gs []glyph) []glyph {
+	if len(gs) < 2 {
+		return gs
+	}
+	sort.SliceStable(gs, func(i, j int) bool { return gs[i].x < gs[j].x })
+	type stack struct {
+		glyphs []glyph
+	}
+	var stacks []stack
+	for _, g := range gs {
+		if n := len(stacks); n > 0 && stacksWith(stacks[n-1].glyphs, g) {
+			stacks[n-1].glyphs = append(stacks[n-1].glyphs, g)
+			continue
+		}
+		stacks = append(stacks, stack{glyphs: []glyph{g}})
+	}
+	out := make([]glyph, 0, len(gs))
+	for _, s := range stacks {
+		out = append(out, orderStack(s.glyphs)...)
+	}
+	return out
+}
+
+func glyphRight(g glyph) float64 {
+	w := g.w
+	if w <= 0 {
+		w = g.size * 0.5
+	}
+	if w > g.size*1.2 {
+		w = g.size
+	}
+	return g.x + w*0.85
+}
+
+func stacksWith(have []glyph, g glyph) bool {
+	gx1 := glyphRight(g)
+	for _, e := range have {
+		ex1 := glyphRight(e)
+		ov := math.Min(ex1, gx1) - math.Max(e.x, g.x)
+		narrow := math.Min(ex1-e.x, gx1-g.x)
+		if narrow < 0.4 {
+			narrow = 0.4
+		}
+		if ov > narrow*0.45 && math.Abs(e.y-g.y) > math.Max(e.size, g.size)*0.22 {
+			return true
+		}
+	}
+	return false
+}
+
+func orderStack(gs []glyph) []glyph {
+	if len(gs) < 2 {
+		return gs
+	}
+	sort.SliceStable(gs, func(i, j int) bool { return gs[i].y > gs[j].y })
+	maxSize := 0.0
+	for _, g := range gs {
+		if g.size > maxSize {
+			maxSize = g.size
+		}
+	}
+	var large, small []glyph
+	for _, g := range gs {
+		if maxSize > 0 && g.size < maxSize*0.82 {
+			small = append(small, g)
+			continue
+		}
+		large = append(large, g)
+	}
+	if len(large) == 0 {
+		return gs
+	}
+	used := make([]bool, len(small))
+	out := make([]glyph, 0, len(gs))
+	for _, base := range large {
+		out = append(out, base)
+		bx1 := glyphRight(base)
+		var mine []glyph
+		for i, s := range small {
+			if used[i] {
+				continue
+			}
+			sx1 := glyphRight(s)
+			if math.Min(bx1, sx1)-math.Max(base.x, s.x) > 0 {
+				used[i] = true
+				mine = append(mine, s)
+			}
+		}
+		sort.SliceStable(mine, func(i, j int) bool { return mine[i].y > mine[j].y })
+		out = append(out, mine...)
+	}
+	for i, s := range small {
+		if !used[i] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func isMathSignal(r rune) bool {
