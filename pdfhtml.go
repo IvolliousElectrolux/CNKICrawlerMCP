@@ -12,7 +12,6 @@ import (
 	"image"
 	"image/png"
 	"io"
-	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -830,7 +829,6 @@ func orderPageGlyphs(gs []glyph, ox, oy, pw, ph float64) []glyph {
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].y > sorted[j].y })
 	lines := clusterByY(sorted, 0.5)
 	gutter, ok := pageGutter(lines)
-	log.Printf("双栏: 行 %d, 认出 %v, 位置 %.1f", len(lines), ok, gutter)
 	if !ok {
 		return groupGlyphs(gs)
 	}
@@ -881,7 +879,6 @@ func pageGutter(lines [][]glyph) (float64, bool) {
 		return 0, false
 	}
 	var mids []float64
-	var widest float64
 	for _, line := range lines {
 		if len(line) < 2 {
 			continue
@@ -900,10 +897,7 @@ func pageGutter(lines [][]glyph) (float64, bool) {
 			best = gap
 			mid = at
 		}
-		if best > widest {
-			widest = best
-		}
-		if best < 28 {
+		if best < 18 {
 			continue
 		}
 		left, right := 0, 0
@@ -920,22 +914,27 @@ func pageGutter(lines [][]glyph) (float64, bool) {
 		mids = append(mids, mid)
 	}
 	if len(mids) < 5 {
-		log.Printf("双栏未凑够: 候选 %d, 最大缝 %.1f, 版心宽 %.1f", len(mids), widest, width)
 		return 0, false
 	}
-	sort.Float64s(mids)
-	med := mids[len(mids)/2]
-	near, sum := 0, 0.0
+	bestN, bestSum := 0, 0.0
 	for _, m := range mids {
-		if math.Abs(m-med) < 18 {
-			near++
-			sum += m
+		n := 0
+		sum := 0.0
+		for _, o := range mids {
+			if math.Abs(o-m) < 36 {
+				n++
+				sum += o
+			}
+		}
+		if n > bestN {
+			bestN = n
+			bestSum = sum
 		}
 	}
-	if near < 5 {
+	if bestN < 5 {
 		return 0, false
 	}
-	return sum / float64(near), true
+	return bestSum / float64(bestN), true
 }
 
 // crossesGutter 这一行的字连续穿过栏距, 是通栏标题或摘要, 不能拆开.
