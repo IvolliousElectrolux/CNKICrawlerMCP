@@ -31,42 +31,38 @@ jobs:
       - name: Download ddddocr models
         run: |
           python3 - <<'PY'
-          import hashlib, io, json, pathlib, urllib.request, zipfile
+          import hashlib, pathlib, urllib.request
           root = pathlib.Path("captcha/model")
           root.mkdir(parents=True, exist_ok=True)
-          ocr_sha = "33b5cd351ee94e73a6bf8fa18c415ed8b819b3ffd342e267c30d8ad8334e34e8"
-          det_sha = "6faa8ea85a8c1a634e5050c4a138fca10f30194e0d7abbe9ade1fcd423af6ed6"
+          # 知网是依次点击文字. 只要单字识别 common.onnx 和文字框检测 common_det.onnx.
+          # 不下载旧版 common_old, 也不下载滑块用的其它文件.
+          rev = "90d0d9bf95d92c3d2109c8b911261b0c01c9fd71"
+          files = {
+              "common.onnx": "33b5cd351ee94e73a6bf8fa18c415ed8b819b3ffd342e267c30d8ad8334e34e8",
+              "common_det.onnx": "6faa8ea85a8c1a634e5050c4a138fca10f30194e0d7abbe9ade1fcd423af6ed6",
+          }
 
           def fetch(url):
               req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
               return urllib.request.urlopen(req, timeout=180).read()
 
-          def fresh(name, digest):
+          for name, digest in files.items():
               path = root / name
               if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest:
                   print("cached", name)
-                  return False
-              return True
-
-          def save(name, data, digest):
+                  continue
+              url = f"https://github.com/86maid/ddddocr/raw/{rev}/model/{name}"
+              print("download", url)
+              data = fetch(url)
               got = hashlib.sha256(data).hexdigest()
               if got != digest:
                   raise SystemExit(f"hash mismatch {name}: {got}")
-              (root / name).write_bytes(data)
+              path.write_bytes(data)
               print("wrote", name, len(data))
-
-          if fresh("common.onnx", ocr_sha):
-              save("common.onnx", fetch("https://github.com/86maid/ddddocr/raw/90d0d9bf95d92c3d2109c8b911261b0c01c9fd71/model/common.onnx"), ocr_sha)
-          if fresh("common_det.onnx", det_sha):
-              meta = json.loads(fetch("https://pypi.org/pypi/ddddocr/1.4.11/json"))
-              wheel_url = next(u["url"] for u in meta["urls"] if u["packagetype"] == "bdist_wheel")
-              print("download", wheel_url)
-              blob = zipfile.ZipFile(io.BytesIO(fetch(wheel_url))).read("ddddocr/common_det.onnx")
-              save("common_det.onnx", blob, det_sha)
           PY
 
-      - name: Install mingw
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64
+      - name: Install mingw and upx
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64 upx-ucl
 
       - uses: actions/setup-go@v5
         with:
@@ -114,8 +110,11 @@ jobs:
           mkdir -p dist
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/CNKICrawlerMCP.exe .
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/CNKICrawlerMCP .
+          upx --best --lzma dist/CNKICrawlerMCP.exe
+          upx --best --lzma dist/CNKICrawlerMCP
           cp captcha/target/x86_64-pc-windows-gnu/release/cnki-click.exe dist/cnki-click.exe
           cp captcha/target/x86_64-unknown-linux-gnu/release/cnki-click dist/cnki-click
+          ls -l dist
 
       - uses: actions/upload-artifact@v4
         with:

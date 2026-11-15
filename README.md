@@ -17,7 +17,7 @@
 
 ## 安装
 
-可执行文件由 GitHub Actions 编译, 不要在本机安装 Go, Rust 或本地编译. 推送到 GitHub 后打开 Actions 里的 `build`, 下载名为 `CNKICrawlerMCP` 的产物. 里面的 `CNKICrawlerMCP.exe` 和 `cnki-click.exe` 要放在同一目录. 遇到依次点击三个字的验证时, 主程序会调用旁边的 `cnki-click.exe`, 用 ddddocr 认出字的位置并提交坐标.
+可执行文件由 GitHub Actions 编译, 不要在本机安装 Go, Rust 或本地编译. 推送到 GitHub 后打开 Actions 里的 `build`, 下载名为 `CNKICrawlerMCP` 的产物. 里面的 `CNKICrawlerMCP.exe` 和 `cnki-click.exe` 要放在同一目录. 主程序经过 UPX 压缩. 遇到依次点击三个字的验证时, 主程序会调用旁边的 `cnki-click.exe`. 识别只用 ddddocr 的文字框检测 `common_det.onnx` 和单字识别 `common.onnx`, 不带旧版模型和滑块.
 
 ### 接入 Cursor
 

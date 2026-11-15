@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+# 只做点选: 认字和找字框. 关掉 server, 运行时也不走旧版模型和滑块.
 ddddocr-tract = { version = "0.1.0", default-features = false }
 image = "0.25"
 serde = { version = "1", features = ["derive"] }
@@ -18,3 +19,5 @@ serde_json = "1"
 
 [profile.release]
 strip = true
+lto = "thin"
+codegen-units = 1

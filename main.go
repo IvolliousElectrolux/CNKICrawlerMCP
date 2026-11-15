@@ -94,31 +94,6 @@ func main() {
 	if err := server.ServeStdio(s); err != nil {
 		log.Printf("MCP 退出: %v", err)
 	}
-
-	/*
-		// Debug 调试
-		Cookie, _ := IpLogin()
-		if Cookie == "" {
-			fmt.Println("[Error] 登录失败，未获取到Cookie")
-			return
-		}
-		//fmt.Println("[Success] 登录获取的Cookie:", Cookie)
-		Papers, _ := Search("格罗皮乌斯", 1, 20, Cookie)
-		for i := range Papers {
-			if Papers[i].SourceLink != "" {
-				composite, comprehensive, err := GetSourceFactors(Papers[i].SourceLink, Cookie)
-				if err == nil {
-					Papers[i].SouceCompositeFactor = composite
-					Papers[i].SourceComprehensiveFactor = comprehensive
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-		}
-		for _, paper := range Papers {
-			fmt.Printf("标题: %s\n作者: %s\n来源: %s\n来源链接: %s\n跳转链接: %s\n 复合影响因子: %.2f\n 综合影响因子: %.2f\n",
-				paper.Title, paper.Authors, paper.Source, paper.SourceLink, paper.Href, paper.SouceCompositeFactor, paper.SourceComprehensiveFactor)
-		}
-	*/
 }
 
 func handleGetGlobalCookie(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
